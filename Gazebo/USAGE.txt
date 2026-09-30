@@ -1,0 +1,137 @@
+Go2 Gazebo Simulation — Usage Guide
+======================================
+
+WHAT THIS IS
+  Unitree Go2 simulation in Gazebo Harmonic + ROS2 Jazzy.
+  - Walking control via /cmd_vel (same interface as real robot with community SDKs)
+  - Full sensor suite: Hesai XT16 LiDAR, 5x depth cameras, fisheye, IMU
+  - Unitree custom message types: /lowstate (unitree_go/msg/LowState)
+
+MODEL SOURCE
+  URDF and meshes from official Unitree repository:
+  https://github.com/unitreerobotics/unitree_ros (robots/go2_description/)
+  Added as a git submodule at upstream/unitree_ros/
+
+
+PREREQUISITES (Linux)
+  - Docker Engine + Docker Compose v2
+  - nvidia-container-runtime (for GPU-accelerated Gazebo sensors)
+    Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+  - X11 display (for Gazebo GUI)
+
+
+FIRST-TIME SETUP
+  # Clone the repo and initialise all submodules:
+  git clone <repo-url>
+  cd Robotteknologi-7.-semester
+  git submodule update --init --recursive
+
+  # Allow Docker to use your display:
+  xhost +local:docker
+
+
+BUILD
+  cd Gazebo/
+  docker compose build
+
+
+RUN
+  xhost +local:docker
+  docker compose up
+
+
+EXPECTED STARTUP SEQUENCE
+  1. Gazebo Harmonic window opens (empty world)
+  2. Go2 robot spawns in the world at z=0.4m
+  3. Robot drops to ground and stands up (CHAMP controller)
+  4. All sensor topics become available after ~5 seconds
+
+  If the robot falls over on startup: this is normal on first run while
+  CHAMP's initial stance phase settles. It self-recovers.
+
+
+CONTROL THE ROBOT
+  In a second terminal (inside the container):
+  docker exec -it <container_name> bash
+  source /ros2_ws/install/setup.sh
+
+  # Drive forward at 0.2 m/s:
+  ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
+    '{linear: {x: 0.2, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}' \
+    --rate 10
+
+  # Keyboard teleop (install teleop_twist_keyboard if not present):
+  ros2 run teleop_twist_keyboard teleop_twist_keyboard
+
+  # Stop the robot:
+  ros2 topic pub /cmd_vel geometry_msgs/msg/Twist '{}' --once
+
+
+VERIFY TOPICS
+  ros2 topic list | grep -E "cmd_vel|lowstate|utlidar|camera|imu|clock|odom"
+
+  Expected topics include:
+    /cmd_vel
+    /clock
+    /imu/data
+    /joint_states
+    /lowstate
+    /odom
+    /utlidar/cloud
+    /front_camera/color/image_raw
+    /front_camera/depth/image_rect_raw
+    /left_camera/color/image_raw
+    /left_camera/depth/image_rect_raw
+    /right_camera/color/image_raw
+    /right_camera/depth/image_rect_raw
+    /chin_camera/color/image_raw
+    /chin_camera/depth/image_rect_raw
+    /rear_camera/color/image_raw
+    /rear_camera/depth/image_rect_raw
+    /fisheye_camera/image_raw
+
+  Check rates:
+    ros2 topic hz /utlidar/cloud      # ~10 Hz
+    ros2 topic hz /lowstate           # ~200+ Hz
+    ros2 topic hz /front_camera/color/image_raw  # ~15 Hz
+    ros2 topic hz /imu/data           # ~200 Hz
+
+  Inspect a LowState message:
+    ros2 topic echo /lowstate --once
+
+
+REBUILD AFTER CODE CHANGES
+  docker compose up --build
+
+
+STOP
+  Ctrl+C  or  docker compose down
+
+
+REAL ROBOT INTERFACE NOTES
+  On the physical Go2 with a community SDK (e.g. abizovnuralem/go2_ros2_sdk),
+  publishing to /cmd_vel is bridged internally to the sport mode API.
+  The same /cmd_vel commands used here will work on the real robot.
+
+  The /lowstate topic uses unitree_go/msg/LowState — the same message type
+  as the physical robot. Code reading /lowstate will work on both.
+
+  Sensor topics use standard ROS2 types (PointCloud2, Image, Imu) with the
+  same topic names as the physical robot.
+
+
+CPU-ONLY (NO GPU)
+  If you don't have an NVIDIA GPU:
+  1. Remove the 'deploy' block from docker-compose.yml
+  2. In go2_description/urdf/go2_gazebo.urdf.xacro, change:
+       <render_engine>ogre2</render_engine>
+     to:
+       <render_engine>ogre</render_engine>
+  Note: ogre (software renderer) is significantly slower for sensor rendering.
+
+
+KNOWN LIMITATIONS
+  - Gait quality differs from the physical robot (CHAMP open-source vs Unitree firmware)
+  - Camera positions are approximate (verify against physical Go2 CAD for precise TF)
+  - RGBD depth output is 32-bit float (32FC1); real RealSense outputs 16-bit (16UC1)
+  - /lowcmd is subscribed but not yet applied (future joint control work)

@@ -1,0 +1,35 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 500
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # CHAMP publishes trajectory_msgs/JointTrajectory to this topic name by default.
+    # Must match the topic that champ_base's QuadrupedController publishes on
+    # (param joint_controller_topic, default: joint_group_position_controller/command).
+    joint_group_position_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+joint_group_position_controller:
+  ros__parameters:
+    joints:
+      - FR_hip_joint
+      - FR_thigh_joint
+      - FR_calf_joint
+      - FL_hip_joint
+      - FL_thigh_joint
+      - FL_calf_joint
+      - RR_hip_joint
+      - RR_thigh_joint
+      - RR_calf_joint
+      - RL_hip_joint
+      - RL_thigh_joint
+      - RL_calf_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    allow_partial_joints_goal: false
+    open_loop_control: false

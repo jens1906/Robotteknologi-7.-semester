@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>go2_description</name>
+  <version>0.1.0</version>
+  <description>
+    Unitree Go2 robot description for Gazebo Harmonic. Wraps the official upstream
+    URDF (unitreerobotics/unitree_ros) and adds Gazebo sensor plugins, ros2_control
+    hardware interface, and CHAMP gait configuration.
+  </description>
+  <maintainer email="todo@todo.com">TODO</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>xacro</depend>
+  <depend>robot_state_publisher</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

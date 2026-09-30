@@ -1,0 +1,58 @@
+# CHAMP gait parameters for Unitree Go2
+# Source: physical Go2 dimensions and community-validated parameters
+# Ref: khaledgabr77/unitree_go2_ros2 for Gazebo Harmonic + ROS2 Jazzy
+
+go2:
+  ros__parameters:
+    gazebo: true
+    publish_foot_contacts: true
+
+    # Gait timing
+    stance_duration: 0.25    # seconds per stance phase
+    swing_height: 0.04       # meters — swing foot clearance
+    swing_max_height: 0.10   # max intermediate foot height during swing
+    stance_depth: 0.00       # ground penetration depth (0 = no digging)
+
+    # Max velocities (matches Go2 sport mode limits)
+    max_linear_velocity_x: 0.5      # m/s forward/backward
+    max_linear_velocity_y: 0.4      # m/s left/right
+    max_angular_velocity_z: 0.5     # rad/s yaw
+
+    # Body geometry
+    com_x_translation: 0.0
+    robot_standing_height: 0.225    # meters nominal standing height
+    base_height_error_tolerance: 0.01
+
+    # Leg links (must match URDF link names)
+    base: "base"
+    left_front_leg: "FL_foot"
+    right_front_leg: "FR_foot"
+    left_hind_leg: "RL_foot"
+    right_hind_leg: "RR_foot"
+
+    # Joint mappings (must match URDF joint names)
+    left_front_hip: "FL_hip_joint"
+    left_front_upper_leg: "FL_thigh_joint"
+    left_front_lower_leg: "FL_calf_joint"
+
+    right_front_hip: "FR_hip_joint"
+    right_front_upper_leg: "FR_thigh_joint"
+    right_front_lower_leg: "FR_calf_joint"
+
+    left_hind_hip: "RL_hip_joint"
+    left_hind_upper_leg: "RL_thigh_joint"
+    left_hind_lower_leg: "RL_calf_joint"
+
+    right_hind_hip: "RR_hip_joint"
+    right_hind_upper_leg: "RR_thigh_joint"
+    right_hind_lower_leg: "RR_calf_joint"
+
+    # Leg geometry (Go2 link lengths in meters)
+    hip_to_ground:
+      x: 0.0
+      y: 0.0
+      z: -0.08
+    upper_leg_length: 0.213
+    lower_leg_length: 0.213
+    knee_direction: -1      # -1 for standard (knees bend backward)
+    pantograph_leg: false

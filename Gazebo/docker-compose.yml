@@ -1,0 +1,28 @@
+services:
+  go2_sim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: go2_sim:latest
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=0
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    # host networking: required for Gazebo transport (DDS multicast) and
+    # ros2 DDS discovery to work between container and host
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true
+    # GPU passthrough for Gazebo ogre2 renderer (sensors require GPU).
+    # Remove the 'deploy' block if running on CPU-only hardware and set
+    # <render_engine>ogre</render_engine> in go2_gazebo.urdf.xacro instead.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
