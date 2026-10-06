@@ -1,4 +1,4 @@
-FROM osrf/ros:jazzy-ros-base
+FROM ros:jazzy-ros-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -10,9 +10,12 @@ RUN apt-get update && apt-get install -y \
     ros-jazzy-gz-ros2-control \
     ros-jazzy-xacro \
     ros-jazzy-robot-state-publisher \
+    ros-jazzy-joint-state-publisher \
     ros-jazzy-joint-state-broadcaster \
     ros-jazzy-joint-trajectory-controller \
     ros-jazzy-nav-msgs \
+    ros-jazzy-nav2-bringup \
+    ros-jazzy-robot-localization \
     python3-colcon-common-extensions \
     python3-rosdep \
     && rm -rf /var/lib/apt/lists/*
@@ -66,18 +69,12 @@ print('unitree_go CMakeLists.txt patched successfully')
 PYEOF
 
 # ---- CHAMP gait controller (not in Jazzy binary repos — build from source) ----
-COPY upstream/champ/ src/champ_upstream/
-# CHAMP ros2 branch contains subdirs: champ, champ_base, champ_bringup,
-# champ_config, champ_description, champ_gazebo, champ_msgs, champ_navigation.
-# We copy all into src/ so colcon finds them.
-RUN cp -r src/champ_upstream/champ             src/ && \
-    cp -r src/champ_upstream/champ_base        src/ && \
-    cp -r src/champ_upstream/champ_bringup     src/ && \
-    cp -r src/champ_upstream/champ_config      src/ && \
-    cp -r src/champ_upstream/champ_description src/ && \
-    cp -r src/champ_upstream/champ_msgs        src/ && \
-    cp -r src/champ_upstream/champ_navigation  src/ && \
-    rm -rf src/champ_upstream
+# Only copy the packages we actually use: champ (core lib), champ_base (controller),
+# champ_msgs (message types). Skip champ_description/navigation/bringup/config/gazebo
+# as they pull in unavailable deps (velodyne_gazebo_plugins, ecl_threads, etc.).
+COPY upstream/champ/champ/      src/champ/
+COPY upstream/champ/champ_base/ src/champ_base/
+COPY upstream/champ/champ_msgs/ src/champ_msgs/
 
 # ---- Our ROS2 packages ----
 COPY upstream/unitree_ros/robots/go2_description/ /upstream/go2_description/
@@ -86,9 +83,14 @@ COPY src/go2_sim/         src/go2_sim/
 COPY src/go2_hw_bridge/   src/go2_hw_bridge/
 
 # ---- Dependencies ----
-RUN rosdep init || true && \
+# apt-get update is needed again because rm -rf /var/lib/apt/lists/* cleared the cache above.
+# --skip-keys: skip packages not available in Jazzy repos or handled above manually.
+RUN apt-get update && \
+    rosdep init || true && \
     rosdep update && \
-    rosdep install --from-paths src --ignore-src -r -y
+    rosdep install --from-paths src --ignore-src -r -y \
+        --skip-keys "velodyne_gazebo_plugins ecl_threads" && \
+    rm -rf /var/lib/apt/lists/*
 
 # ---- Build ----
 RUN . /opt/ros/jazzy/setup.sh && \
