@@ -3,6 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
+    AppendEnvironmentVariable,
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     RegisterEventHandler,
@@ -12,6 +13,7 @@ from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -27,7 +29,12 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
 
-    robot_description = Command(['xacro ', xacro_file])
+    robot_description = ParameterValue(Command(['xacro ', xacro_file]), value_type=str)
+
+    # Gazebo resolves package://go2_description/... as model://go2_description/...,
+    # so the parent of the package share dir must be on its resource path.
+    gz_resource_path = AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH', os.path.dirname(go2_description_share))
 
     # 1. Gazebo Harmonic simulator with our custom world
     gazebo = IncludeLaunchDescription(
@@ -111,20 +118,25 @@ def generate_launch_description():
     )
 
     # 6. CHAMP gait controller — accepts /cmd_vel, outputs JointTrajectory
+    #    to the JointTrajectoryController's ~/joint_trajectory topic
     champ_controller = Node(
         package='champ_base',
-        executable='champ_controller',
+        executable='quadruped_controller_node',
         name='champ_controller',
         output='screen',
         parameters=[
             gait_config,
             {
                 'use_sim_time': use_sim_time,
-                'joint_controller_topic': 'joint_group_position_controller/command',
+                'urdf': robot_description,
+                'gazebo': True,
+                'joint_controller_topic': 'joint_group_position_controller/joint_trajectory',
+                'publish_joint_control': True,
                 'publish_joint_states': False,
                 'publish_foot_contacts': True,
             },
         ],
+        remappings=[('cmd_vel/smooth', 'cmd_vel')],
     )
 
     # 7. go2_hw_bridge — converts /joint_states + /imu/data → /lowstate
@@ -139,6 +151,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true',
                               description='Use simulation clock'),
+        gz_resource_path,
         gazebo,
         robot_state_publisher,
         spawn_robot,
