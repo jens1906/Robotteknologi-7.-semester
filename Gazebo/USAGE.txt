@@ -10,7 +10,7 @@ WHAT THIS IS
 MODEL SOURCE
   URDF and meshes from official Unitree repository:
   https://github.com/unitreerobotics/unitree_ros (robots/go2_description/)
-  Added as a git submodule at upstream/unitree_ros/
+  Vendored (copied into this repo) at upstream/unitree_ros/
 
 
 PREREQUISITES (Linux)
@@ -21,10 +21,9 @@ PREREQUISITES (Linux)
 
 
 FIRST-TIME SETUP
-  # Clone the repo and initialise all submodules:
+  # Clone the repo:
   git clone <repo-url>
   cd Robotteknologi-7.-semester
-  git submodule update --init --recursive
 
   # Allow Docker to use your display:
   xhost +local:docker
