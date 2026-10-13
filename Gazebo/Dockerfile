@@ -23,8 +23,8 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /ros2_ws
 
 # ---- unitree_go messages ----
-# Copy only the message package from the unitree_ros2 submodule.
-# Path inside the submodule: cyclonedds_ws/src/unitree/unitree_go/
+# Copy only the message package from the vendored unitree_ros2 repo.
+# Path inside the vendored repo: cyclonedds_ws/src/unitree/unitree_go/
 COPY upstream/unitree_ros2/cyclonedds_ws/src/unitree/unitree_go/ src/unitree_go/
 
 # Patch unitree_go/CMakeLists.txt to make rosidl_generator_dds_idl optional.
