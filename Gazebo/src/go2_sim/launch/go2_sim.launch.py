@@ -26,6 +26,7 @@ def generate_launch_description():
     bridge_config = os.path.join(go2_sim_share, 'config', 'bridge.yaml')
     world_file = os.path.join(go2_sim_share, 'config', 'go2_world.sdf')
     gait_config = os.path.join(go2_description_share, 'config', 'gait.yaml')
+    controllers_config = os.path.join(go2_description_share, 'config', 'ros2_controllers.yaml')
 
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
 
@@ -36,7 +37,7 @@ def generate_launch_description():
     gz_resource_path = AppendEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH', os.path.dirname(go2_description_share))
 
-    # 1. Gazebo Harmonic simulator with our custom world
+    # 1. Gazebo Jetty simulator with our custom world
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(ros_gz_sim_share, 'launch', 'gz_sim.launch.py')
@@ -99,7 +100,7 @@ def generate_launch_description():
     load_joint_state_broadcaster = Node(
         package='controller_manager',
         executable='spawner',
-        arguments=['joint_state_broadcaster'],
+        arguments=['joint_state_broadcaster', '--param-file', controllers_config],
         output='screen',
         parameters=[{'use_sim_time': use_sim_time}],
     )
@@ -110,7 +111,7 @@ def generate_launch_description():
             on_exit=[Node(
                 package='controller_manager',
                 executable='spawner',
-                arguments=['joint_group_position_controller'],
+                arguments=['joint_group_position_controller', '--param-file', controllers_config],
                 output='screen',
                 parameters=[{'use_sim_time': use_sim_time}],
             )],
@@ -148,6 +149,16 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}],
     )
 
+    # 8. sim_bridge — converts /api/sport/request (unitree_api) → /cmd_vel,
+    #    so code written for the physical Go2 drives the sim unchanged
+    sport_bridge = Node(
+        package='sim_bridge',
+        executable='sport_request_bridge',
+        name='sim_bridge',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true',
                               description='Use simulation clock'),
@@ -161,4 +172,5 @@ def generate_launch_description():
         load_joint_position_controller,
         TimerAction(period=5.0, actions=[champ_controller]),
         hw_bridge,
+        sport_bridge,
     ])

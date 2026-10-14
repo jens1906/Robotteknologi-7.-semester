@@ -2,7 +2,7 @@ Go2 Gazebo Simulation — Usage Guide
 ======================================
 
 WHAT THIS IS
-  Unitree Go2 simulation in Gazebo Harmonic + ROS2 Jazzy.
+  Unitree Go2 simulation in Gazebo Jetty + ROS2 Lyrical.
   - Walking control via /cmd_vel (same interface as real robot with community SDKs)
   - Full sensor suite: Hesai XT16 LiDAR, 5x depth cameras, fisheye, IMU
   - Unitree custom message types: /lowstate (unitree_go/msg/LowState)
@@ -15,7 +15,7 @@ MODEL SOURCE
 
 PREREQUISITES (Linux)
   - Docker Engine + Docker Compose v2
-  - nvidia-container-runtime (for GPU-accelerated Gazebo sensors)
+  - Optional: nvidia-container-toolkit (only for the NVIDIA GPU override)
     Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
   - X11 display (for Gazebo GUI)
 
@@ -40,7 +40,7 @@ RUN
 
 
 EXPECTED STARTUP SEQUENCE
-  1. Gazebo Harmonic window opens (empty world)
+  1. Gazebo Jetty window opens (empty world)
   2. Go2 robot spawns in the world at z=0.4m
   3. Robot drops to ground and stands up (CHAMP controller)
   4. All sensor topics become available after ~5 seconds
@@ -99,6 +99,25 @@ VERIFY TOPICS
     ros2 topic echo /lowstate --once
 
 
+DRIVING FROM follow_anywhere_ws
+  The sim_bridge node (started by the launch file) converts Unitree sport
+  requests on /api/sport/request (unitree_api/msg/Request) to /cmd_vel:
+    1008 Move -> Twist,  1003 StopMove -> zero,  1004/1005/1006 stand -> ignored
+  Motion stops if no Move arrives for 0.5 s (parameter cmd_timeout).
+
+  With the sim running, on the host:
+    cd follow_anywhere_ws && source install/setup.bash
+    export ROS_DOMAIN_ID=0
+    ros2 run manual_controller keyboard_teleop
+  Do NOT use scripts/drive_go2.sh here: it binds CycloneDDS to the robot NIC.
+  If the host doesn't see the sim topics, use the same RMW_IMPLEMENTATION on
+  both sides (unset it on the host, or set it in docker-compose.yml).
+
+  Test without the host (inside the container):
+    ros2 topic pub -r 10 /api/sport/request unitree_api/msg/Request \
+      "{header: {identity: {api_id: 1008}}, parameter: '{\"x\": 0.3, \"y\": 0.0, \"z\": 0.0}'}"
+
+
 REBUILD AFTER CODE CHANGES
   docker compose up --build
 
@@ -119,14 +138,17 @@ REAL ROBOT INTERFACE NOTES
   same topic names as the physical robot.
 
 
-CPU-ONLY (NO GPU)
-  If you don't have an NVIDIA GPU:
-  1. Remove the 'deploy' block from docker-compose.yml
-  2. In go2_description/urdf/go2_gazebo.urdf.xacro, change:
-       <render_engine>ogre2</render_engine>
-     to:
-       <render_engine>ogre</render_engine>
-  Note: ogre (software renderer) is significantly slower for sensor rendering.
+GPU / NO GPU
+  By default the container renders with Mesa: on the Intel/AMD integrated
+  GPU via /dev/dri. No NVIDIA GPU or nvidia-container-toolkit is needed.
+
+  Pure CPU rendering (llvmpipe), e.g. no /dev/dri or iGPU driver problems:
+    LIBGL_ALWAYS_SOFTWARE=1 docker compose up
+  (If the host has no /dev/dri at all, also remove the 'devices' block
+  from docker-compose.yml.)
+
+  NVIDIA GPU passthrough (faster sensor rendering):
+    docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
 
 
 KNOWN LIMITATIONS

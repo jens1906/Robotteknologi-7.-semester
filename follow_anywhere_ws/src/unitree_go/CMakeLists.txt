@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.5)
 project(unitree_go)
 
 # Patched: Connext DDS IDL generation removed (rosidl_generator_dds_idl is not
-# available on Jazzy and is not needed for CycloneDDS).
+# available on Lyrical and is not needed for CycloneDDS).
 
 # Default to C99
 if(NOT CMAKE_C_STANDARD)
