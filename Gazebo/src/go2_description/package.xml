@@ -3,7 +3,7 @@
   <name>go2_description</name>
   <version>0.1.0</version>
   <description>
-    Unitree Go2 robot description for Gazebo Harmonic. Wraps the official upstream
+    Unitree Go2 robot description for Gazebo Jetty. Wraps the official upstream
     URDF (unitreerobotics/unitree_ros) and adds Gazebo sensor plugins, ros2_control
     hardware interface, and CHAMP gait configuration.
   </description>

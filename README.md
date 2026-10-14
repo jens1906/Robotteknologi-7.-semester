@@ -3,7 +3,7 @@
 ## Driving the Go2 with the keyboard
 
 1. Connect the laptop to the Go2's Ethernet port and set that interface to manual IPv4 `192.168.123.99`, netmask `255.255.255.0` (`ping 192.168.123.161` should answer). Details in [go2_real_ws/README.md](go2_real_ws/README.md).
-2. Install once: `sudo apt install ros-jazzy-rmw-cyclonedds-cpp`
+2. Install once: `sudo apt install ros-lyrical-rmw-cyclonedds-cpp`
 3. Run:
 
 ```bash
@@ -30,14 +30,14 @@ The first run builds the workspace. Keys: W/S forward/back, A/D strafe, left/rig
 
 # go2_real_ws
 
-Standalone ROS2 (Jazzy) workspace for the **physical** Unitree Go2. It only holds the Go2 message packages (`unitree_go`, `unitree_api`). Build and source it to read topics and rosbags. It is independent of `Gazebo/`.
+Standalone ROS2 (Lyrical) workspace for the **physical** Unitree Go2. It only holds the Go2 message packages (`unitree_go`, `unitree_api`). Build and source it to read topics and rosbags. It is independent of `Gazebo/`.
 
-`src/unitree_go` and `src/unitree_api` are copies of the packages in `Gazebo/upstream/unitree_ros2/cyclonedds_ws/src/unitree/`, with the Connext DDS IDL block removed from their `CMakeLists.txt`. That block does not build on Jazzy and is not needed.
+`src/unitree_go` and `src/unitree_api` are copies of the packages in `Gazebo/upstream/unitree_ros2/cyclonedds_ws/src/unitree/`, with the Connext DDS IDL block removed from their `CMakeLists.txt`. That block does not build on Lyrical and is not needed.
 
 ## One-time setup
 
 ```bash
-sudo apt install ros-jazzy-rmw-cyclonedds-cpp ros-jazzy-rosbag2-storage-mcap
+sudo apt install ros-lyrical-rmw-cyclonedds-cpp ros-lyrical-rosbag2-storage-mcap
 ```
 
 Connect the laptop to the Go2's Ethernet port (use a USB-Ethernet adapter if needed). Set that interface to manual IPv4 `192.168.123.99`, netmask `255.255.255.0`, then check:
@@ -53,7 +53,7 @@ The phone app keeps working over Wi-Fi/Bluetooth as usual.
 
 ```bash
 cd go2_real_ws
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/lyrical/setup.bash
 colcon build
 ```
 
@@ -61,7 +61,7 @@ colcon build
 
 ```bash
 cd go2_real_ws
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="YOUR_NIC" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>'
@@ -87,4 +87,4 @@ ros2 bag play bags/run1
 
 - The Go2's camera video is not a ROS topic, so it cannot be recorded this way.
 - Lidar topics (e.g. `/utlidar/cloud`) make large bags.
-- Jazzy's CycloneDDS is newer than the Go2's (0.10.2). If `ros2 topic list` shows no Unitree topics, build the same workspace on Humble.
+- Lyrical's CycloneDDS is newer than the Go2's (0.10.2). If `ros2 topic list` shows no Unitree topics, build the same workspace on Humble.

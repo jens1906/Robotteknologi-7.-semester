@@ -7,7 +7,11 @@
 set -euo pipefail
 
 WS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ROS_SETUP="/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash"
+# ROS 2 Lyrical: $ROS_SETUP if set, else the binary install, else a source build in ~/ros2_lyrical.
+if [ -z "${ROS_SETUP:-}" ]; then
+    ROS_SETUP="/opt/ros/lyrical/setup.bash"
+    [ -f "$ROS_SETUP" ] || ROS_SETUP="$HOME/ros2_lyrical/install/setup.bash"
+fi
 GO2_IP="${GO2_IP:-192.168.123.161}"
 
 detect_nic() {
