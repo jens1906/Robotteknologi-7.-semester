@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>sim_bridge</name>
+  <version>0.1.0</version>
+  <description>
+    Converts Unitree sport-mode requests (unitree_api/msg/Request on
+    /api/sport/request) into /cmd_vel for the CHAMP controller, so code written
+    for the physical Go2 can drive the Gazebo simulation unchanged.
+  </description>
+  <maintainer email="todo@todo.com">TODO</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>unitree_api</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

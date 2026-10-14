@@ -8,21 +8,22 @@ services:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
       - ROS_DOMAIN_ID=0
+      # Rendering runs on Mesa (Intel/AMD iGPU via /dev/dri). Set
+      # LIBGL_ALWAYS_SOFTWARE=1 to force CPU rendering (llvmpipe) instead.
+      - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    # Mesa DRI render nodes. Not an NVIDIA requirement; works with any
+    # Intel/AMD GPU and is harmless if absent from the software path.
+    devices:
+      - /dev/dri:/dev/dri
+    # SELinux (Fedora) blocks access to the host X11 socket otherwise.
+    security_opt:
+      - label=disable
     # host networking: required for Gazebo transport (DDS multicast) and
     # ros2 DDS discovery to work between container and host
     network_mode: host
     ipc: host
     stdin_open: true
     tty: true
-    # GPU passthrough for Gazebo ogre2 renderer (sensors require GPU).
-    # Remove the 'deploy' block if running on CPU-only hardware and set
-    # <render_engine>ogre</render_engine> in go2_gazebo.urdf.xacro instead.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    # NVIDIA GPU passthrough is opt-in, see docker-compose.gpu.yml.

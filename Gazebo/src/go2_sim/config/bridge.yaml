@@ -2,7 +2,7 @@
 # Maps Gazebo internal topic names to the ROS2 topic names used by the
 # physical Go2 robot, so the same code works on sim and real hardware.
 #
-# Gazebo Harmonic sensor topic suffixes:
+# Gazebo Jetty sensor topic suffixes:
 #   rgbd_camera: <topic>/image, <topic>/depth_image, <topic>/points, <topic>/camera_info
 #   gpu_lidar:   <topic>  (direct, no suffix)
 #   imu:         <topic>  (direct, no suffix)

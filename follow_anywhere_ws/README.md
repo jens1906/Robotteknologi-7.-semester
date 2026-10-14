@@ -1,6 +1,6 @@
 # follow_anywhere_ws
 
-ROS2 (Jazzy) workspace for the follow-anywhere project on the physical Unitree Go2.
+ROS2 (Lyrical) workspace for the follow-anywhere project on the physical Unitree Go2.
 
 | Package | Purpose |
 |---|---|
@@ -9,13 +9,13 @@ ROS2 (Jazzy) workspace for the follow-anywhere project on the physical Unitree G
 | `manual_controller` | WASD/arrow-key manual control. |
 | `navigation`, `vision` | Placeholders. Add `<depend>unitree_go</depend>` to use the Go2 messages. |
 
-`unitree_api` and `unitree_go` are the Jazzy-patched copies from `go2_real_ws/src`. Keep their names, since the type names must match what the robot publishes.
+`unitree_api` and `unitree_go` are the Lyrical-patched copies from `go2_real_ws/src`. Keep their names, since the type names must match what the robot publishes.
 
 ## Build
 
 ```bash
 cd follow_anywhere_ws
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/lyrical/setup.bash
 colcon build
 ```
 
@@ -23,7 +23,7 @@ colcon build
 
 ```bash
 cd follow_anywhere_ws
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/lyrical/setup.bash
 source install/setup.bash
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="YOUR_NIC" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>'
