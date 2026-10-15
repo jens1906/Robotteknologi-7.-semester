@@ -11,7 +11,7 @@ from launch.actions import (
 )
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration
+from launch.substitutions import Command, LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -29,6 +29,10 @@ def generate_launch_description():
     controllers_config = os.path.join(go2_description_share, 'config', 'ros2_controllers.yaml')
 
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
+    # headless:=true runs the Gazebo server only, rendering sensors offscreen
+    # (no X11 needed), e.g. for tools/check_interface.py and replay_commands.py.
+    gz_mode = PythonExpression([
+        "'-s --headless-rendering ' if '", LaunchConfiguration('headless'), "' == 'true' else ''"])
 
     robot_description = ParameterValue(Command(['xacro ', xacro_file]), value_type=str)
 
@@ -43,7 +47,7 @@ def generate_launch_description():
             os.path.join(ros_gz_sim_share, 'launch', 'gz_sim.launch.py')
         ),
         launch_arguments={
-            'gz_args': ['-r -v 4 ', world_file],
+            'gz_args': ['-r -v 4 ', gz_mode, world_file],
             'on_exit_shutdown': 'true',
         }.items(),
     )
@@ -58,6 +62,10 @@ def generate_launch_description():
             'robot_description': robot_description,
             'use_sim_time': use_sim_time,
         }],
+        # The real Go2 publishes no /tf; keep the sim's TF out of the way.
+        # Robot code gets its TF from follow_anywhere_ws/go2_bringup on both.
+        remappings=[('/tf', '/sim/tf'), ('/tf_static', '/sim/tf_static'),
+                    ('joint_states', '/sim/joint_states')],
     )
 
     # 3. Spawn the Go2 into Gazebo
@@ -140,28 +148,32 @@ def generate_launch_description():
         remappings=[('cmd_vel/smooth', 'cmd_vel')],
     )
 
-    # 7. go2_hw_bridge — converts /joint_states + /imu/data → /lowstate
-    hw_bridge = Node(
-        package='go2_hw_bridge',
-        executable='lowstate_publisher',
-        name='go2_hw_bridge',
-        output='screen',
-        parameters=[{'use_sim_time': use_sim_time}],
-    )
-
-    # 8. sim_bridge — converts /api/sport/request (unitree_api) → /cmd_vel,
-    #    so code written for the physical Go2 drives the sim unchanged
-    sport_bridge = Node(
-        package='sim_bridge',
-        executable='sport_request_bridge',
-        name='sim_bridge',
-        output='screen',
-        parameters=[{'use_sim_time': use_sim_time}],
-    )
+    # 7. go2_robot_emulator — publishes the physical Go2's ROS interface
+    #    (topics, types, frames, rates, wall-clock stamps) from the sim, and
+    #    serves /api/sport/request, so robot code runs on the sim unchanged.
+    #    Runs on wall-clock time like the robot, not on /clock.
+    emulator = [
+        Node(
+            package='go2_robot_emulator',
+            executable=executable,
+            name=name,
+            output='screen',
+            parameters=[{'use_sim_time': False}],
+        )
+        for executable, name in [
+            ('sport_api', 'sport_api'),
+            ('state', 'go2_state'),
+            ('lidar', 'utlidar'),
+            ('video', 'frontvideostream'),
+            ('realsense', 'camera'),
+        ]
+    ]
 
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true',
                               description='Use simulation clock'),
+        DeclareLaunchArgument('headless', default_value='false',
+                              description='Gazebo server only, no GUI window'),
         gz_resource_path,
         gazebo,
         robot_state_publisher,
@@ -171,6 +183,5 @@ def generate_launch_description():
         TimerAction(period=3.0, actions=[load_joint_state_broadcaster]),
         load_joint_position_controller,
         TimerAction(period=5.0, actions=[champ_controller]),
-        hw_bridge,
-        sport_bridge,
+        *emulator,
     ])

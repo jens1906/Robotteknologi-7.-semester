@@ -9,15 +9,17 @@
       knee_orientation: ">>"        # all knees bend backward
       pantograph_leg: false
       odom_scaler: 0.9
-      # Max velocities (matches Go2 sport mode limits)
-      max_linear_velocity_x: 0.5    # m/s forward/backward
-      max_linear_velocity_y: 0.4    # m/s left/right
-      max_angular_velocity_z: 0.5   # rad/s yaw
+      # Max velocities CHAMP accepts. Above the real robot's commands because
+      # go2_robot_emulator's sport_api scales commands up (velocity_gain) to
+      # make up for CHAMP undershooting; user commands are clamped there.
+      max_linear_velocity_x: 1.0    # m/s forward/backward
+      max_linear_velocity_y: 0.7    # m/s left/right
+      max_angular_velocity_z: 2.5   # rad/s yaw
       com_x_translation: 0.0
-      swing_height: 0.04            # m — swing foot clearance
+      swing_height: 0.08            # m — swing foot clearance; 0.04 tracks speed worse and stumbles above ~0.8 m/s
       stance_depth: 0.00            # ground penetration depth (0 = no digging)
       stance_duration: 0.25         # s per stance phase
-      nominal_height: 0.225         # m standing height
+      nominal_height: 0.30          # m hip-to-foot; real /sportmodestate body_height is ~0.32
 
     # Link chain per leg: hip, thigh, calf, foot (must match URDF link names)
     links_map:

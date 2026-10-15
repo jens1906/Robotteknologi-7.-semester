@@ -1,8 +1,10 @@
 services:
   go2_sim:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # Repo root: the image also builds follow_anywhere_ws's unitree_go,
+      # unitree_api and go2_bringup (Dockerfile.dockerignore limits what is sent).
+      context: ..
+      dockerfile: Gazebo/Dockerfile
     image: go2_sim:latest
     environment:
       - DISPLAY=${DISPLAY}
@@ -13,6 +15,9 @@ services:
       - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # The repo, read-only, so the tools can read real robot bags
+      # (e.g. /repo/go2_all_topics_6_10_11_28)
+      - ..:/repo:ro
     # Mesa DRI render nodes. Not an NVIDIA requirement; works with any
     # Intel/AMD GPU and is harmless if absent from the software path.
     devices:

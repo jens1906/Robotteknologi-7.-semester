@@ -18,66 +18,28 @@ RUN apt-get update && apt-get install -y \
     ros-lyrical-robot-localization \
     python3-colcon-common-extensions \
     python3-rosdep \
+    python3-av \
+    python3-numpy \
+    python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws
 
-# ---- unitree_go / unitree_api messages ----
-# Copy only the message packages from the vendored unitree_ros2 repo.
-# Path inside the vendored repo: cyclonedds_ws/src/unitree/
-# unitree_api is needed by sim_bridge (/api/sport/request).
-COPY upstream/unitree_ros2/cyclonedds_ws/src/unitree/unitree_go/  src/unitree_go/
-COPY upstream/unitree_ros2/cyclonedds_ws/src/unitree/unitree_api/ src/unitree_api/
-
-# Patch both CMakeLists.txt to make rosidl_generator_dds_idl optional.
-# The DDS IDL generation requires RTI Connext which is not available here.
-# We guard it so the standard rosidl_generate_interfaces() call still works.
-RUN python3 - <<'PYEOF'
-import re, pathlib
-
-for pkg in ('unitree_go', 'unitree_api'):
-    cmake = pathlib.Path(f'src/{pkg}/CMakeLists.txt')
-    text = cmake.read_text()
-
-    # Make the find_package QUIET (won't error if not found)
-    text = text.replace(
-        'find_package(rosidl_generator_dds_idl REQUIRED)',
-        'find_package(rosidl_generator_dds_idl QUIET)'
-    )
-
-    # Wrap the DDS IDL generation block in a found-guard
-    dds_block = re.search(
-        r'rosidl_generate_dds_interfaces\(.*?\)',
-        text,
-        re.DOTALL,
-    )
-    if dds_block:
-        old = dds_block.group(0)
-        new = 'if(rosidl_generator_dds_idl_FOUND)\n' + old + '\nendif()'
-        text = text.replace(old, new)
-
-    # Wrap the add_dependencies DDS block
-    add_dep = re.search(
-        r'add_dependencies\(\s*\$\{PROJECT_NAME\}\s*\$\{PROJECT_NAME\}__dds_connext_idl\s*\)',
-        text,
-        re.DOTALL,
-    )
-    if add_dep:
-        old = add_dep.group(0)
-        new = 'if(rosidl_generator_dds_idl_FOUND)\n' + old + '\nendif()'
-        text = text.replace(old, new)
-
-    cmake.write_text(text)
-    print(f'{pkg} CMakeLists.txt patched successfully')
-PYEOF
+# ---- unitree_go / unitree_api messages + shared Go2 config ----
+# Build context is the repo root (see docker-compose.yml), so the sim builds
+# the same message definitions and sensor mounts as follow_anywhere_ws, which
+# match what the real robot sends.
+COPY follow_anywhere_ws/src/unitree_go/  src/unitree_go/
+COPY follow_anywhere_ws/src/unitree_api/ src/unitree_api/
+COPY follow_anywhere_ws/src/go2_bringup/ src/go2_bringup/
 
 # ---- CHAMP gait controller (not in Lyrical binary repos — build from source) ----
 # Only copy the packages we actually use: champ (core lib), champ_base (controller),
 # champ_msgs (message types). Skip champ_description/navigation/bringup/config/gazebo
 # as they pull in unavailable deps (velodyne_gazebo_plugins, ecl_threads, etc.).
-COPY upstream/champ/champ/      src/champ/
-COPY upstream/champ/champ_base/ src/champ_base/
-COPY upstream/champ/champ_msgs/ src/champ_msgs/
+COPY Gazebo/upstream/champ/champ/      src/champ/
+COPY Gazebo/upstream/champ/champ_base/ src/champ_base/
+COPY Gazebo/upstream/champ/champ_msgs/ src/champ_msgs/
 
 # Port CHAMP to Lyrical:
 # - ament_target_dependencies() was removed from ament_cmake, but champ_base
@@ -137,11 +99,11 @@ print('champ_base CMakeLists.txt patched successfully')
 PYEOF
 
 # ---- Our ROS2 packages ----
-COPY upstream/unitree_ros/robots/go2_description/ /upstream/go2_description/
-COPY src/go2_description/ src/go2_description/
-COPY src/go2_sim/         src/go2_sim/
-COPY src/go2_hw_bridge/   src/go2_hw_bridge/
-COPY src/sim_bridge/      src/sim_bridge/
+COPY Gazebo/upstream/unitree_ros/robots/go2_description/ /upstream/go2_description/
+COPY Gazebo/src/go2_description/    src/go2_description/
+COPY Gazebo/src/go2_sim/            src/go2_sim/
+COPY Gazebo/src/go2_robot_emulator/ src/go2_robot_emulator/
+COPY Gazebo/tools/                  /ros2_ws/tools/
 
 # ---- Dependencies ----
 # apt-get update is needed again because rm -rf /var/lib/apt/lists/* cleared the cache above.
