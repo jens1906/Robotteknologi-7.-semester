@@ -1,12 +1,13 @@
 # ros_gz_bridge configuration for the Unitree Go2 simulation.
-# Maps Gazebo internal topic names to the ROS2 topic names used by the
-# physical Go2 robot, so the same code works on sim and real hardware.
+# Bridges raw Gazebo data to ROS. go2_robot_emulator then publishes it under
+# the physical Go2's topic names, frames, rates and message layouts; nothing
+# here is meant to be consumed directly by robot code.
 #
 # Gazebo Jetty sensor topic suffixes:
 #   rgbd_camera: <topic>/image, <topic>/depth_image, <topic>/points, <topic>/camera_info
-#   gpu_lidar:   <topic>  (direct, no suffix)
+#   camera:      <topic>  (direct), <topic minus last part>/camera_info
+#   gpu_lidar:   <topic>/points for PointCloudPacked
 #   imu:         <topic>  (direct, no suffix)
-#   wideanglecamera: <topic>  (direct, no suffix)
 
 # ---- Simulation clock (required for use_sim_time) ----
 - ros_topic_name: "/clock"
@@ -17,100 +18,62 @@
 
 # ---- Joint states (from JointStatePublisher plugin) ----
 # World: "go2_world", model: "go2" — must match world SDF and spawn args
-- ros_topic_name: "/joint_states"
+- ros_topic_name: "/sim/joint_states"
   gz_topic_name: "/world/go2_world/model/go2/joint_state"
   ros_type_name: "sensor_msgs/msg/JointState"
   gz_type_name: "gz.msgs.Model"
   direction: GZ_TO_ROS
 
-# ---- IMU ----
-- ros_topic_name: "/imu/data"
-  gz_topic_name: "/imu/data"
+# ---- Ground-truth body odometry ----
+- ros_topic_name: "/sim/odometry"
+  gz_topic_name: "/model/go2/odometry"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+# ---- Body IMU ----
+- ros_topic_name: "/sim/imu"
+  gz_topic_name: "/imu_gz"
   ros_type_name: "sensor_msgs/msg/Imu"
   gz_type_name: "gz.msgs.IMU"
   direction: GZ_TO_ROS
 
-# ---- LiDAR (Hesai XT16) ----
-- ros_topic_name: "/utlidar/cloud"
-  gz_topic_name: "/utlidar/cloud_gz"
+# ---- L1 lidar IMU ----
+- ros_topic_name: "/sim/utlidar/imu"
+  gz_topic_name: "/utlidar/imu_gz"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+# ---- L1 lidar (dense scan, subsampled by the emulator) ----
+- ros_topic_name: "/sim/utlidar/raw"
+  gz_topic_name: "/utlidar/raw_gz/points"
   ros_type_name: "sensor_msgs/msg/PointCloud2"
   gz_type_name: "gz.msgs.PointCloudPacked"
   direction: GZ_TO_ROS
 
-# ---- Front camera (RealSense equivalent) ----
-- ros_topic_name: "/front_camera/color/image_raw"
-  gz_topic_name: "/front_camera_gz/image"
+# ---- Head camera (encoded to /frontvideostream by the emulator) ----
+- ros_topic_name: "/sim/head_camera/image"
+  gz_topic_name: "/head_camera_gz"
   ros_type_name: "sensor_msgs/msg/Image"
   gz_type_name: "gz.msgs.Image"
   direction: GZ_TO_ROS
 
-- ros_topic_name: "/front_camera/depth/image_rect_raw"
-  gz_topic_name: "/front_camera_gz/depth_image"
+# ---- RealSense D455 ----
+- ros_topic_name: "/sim/d455/color"
+  gz_topic_name: "/d455_gz/image"
   ros_type_name: "sensor_msgs/msg/Image"
   gz_type_name: "gz.msgs.Image"
   direction: GZ_TO_ROS
 
-- ros_topic_name: "/front_camera/color/camera_info"
-  gz_topic_name: "/front_camera_gz/camera_info"
+- ros_topic_name: "/sim/d455/depth"
+  gz_topic_name: "/d455_gz/depth_image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/sim/d455/camera_info"
+  gz_topic_name: "/d455_gz/camera_info"
   ros_type_name: "sensor_msgs/msg/CameraInfo"
   gz_type_name: "gz.msgs.CameraInfo"
-  direction: GZ_TO_ROS
-
-# ---- Left camera ----
-- ros_topic_name: "/left_camera/color/image_raw"
-  gz_topic_name: "/left_camera_gz/image"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
-
-- ros_topic_name: "/left_camera/depth/image_rect_raw"
-  gz_topic_name: "/left_camera_gz/depth_image"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
-
-# ---- Right camera ----
-- ros_topic_name: "/right_camera/color/image_raw"
-  gz_topic_name: "/right_camera_gz/image"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
-
-- ros_topic_name: "/right_camera/depth/image_rect_raw"
-  gz_topic_name: "/right_camera_gz/depth_image"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
-
-# ---- Chin camera ----
-- ros_topic_name: "/chin_camera/color/image_raw"
-  gz_topic_name: "/chin_camera_gz/image"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
-
-- ros_topic_name: "/chin_camera/depth/image_rect_raw"
-  gz_topic_name: "/chin_camera_gz/depth_image"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
-
-# ---- Rear camera ----
-- ros_topic_name: "/rear_camera/color/image_raw"
-  gz_topic_name: "/rear_camera_gz/image"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
-
-- ros_topic_name: "/rear_camera/depth/image_rect_raw"
-  gz_topic_name: "/rear_camera_gz/depth_image"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
-
-# ---- Fisheye camera (wideanglecamera: no /image suffix) ----
-- ros_topic_name: "/fisheye_camera/image_raw"
-  gz_topic_name: "/fisheye_camera_gz"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
   direction: GZ_TO_ROS

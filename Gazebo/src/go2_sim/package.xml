@@ -19,8 +19,7 @@
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>go2_description</exec_depend>
-  <exec_depend>go2_hw_bridge</exec_depend>
-  <exec_depend>sim_bridge</exec_depend>
+  <exec_depend>go2_robot_emulator</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
