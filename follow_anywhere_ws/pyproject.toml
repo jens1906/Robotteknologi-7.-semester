@@ -1,0 +1,28 @@
+[project]
+name = "follow-anywhere-ws"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Jens Søby Hansen", email = "jens1906@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "lap>=0.5.13",
+    "motmetrics>=1.4.0",
+    "onnxruntime>=1.31.0",
+    "opencv-python>=5.0.0.93",
+    "transformers>=5.19.0",
+    "ultralytics>=8.4.176",
+]
+
+[project.scripts]
+follow-anywhere-ws = "follow_anywhere_ws:main"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"
+
+
+
+

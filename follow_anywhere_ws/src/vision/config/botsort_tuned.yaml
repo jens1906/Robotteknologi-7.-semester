@@ -1,0 +1,27 @@
+# BoT-SORT (motion + camera-motion compensation, no appearance model) tuned for a person-following
+# robot on a slow computer. Chosen by scoring against MOT17 ground truth with `scripts/vision.sh score`:
+# on the same sequences it beat ByteTrack and the earlier variant that used the YOLO detector's
+# features as appearance (that one linked the wrong people: ~3x the ID switches).
+#
+# Frames here are PROCESSED frames (the detector drops camera frames when inference is slower than
+# the camera). How long a hidden person is remembered is set in seconds by the detector parameter
+# occlusion_keep_s, which overrides track_buffer.
+
+tracker_type: botsort
+track_high_thresh: 0.25     # first-stage match threshold
+track_low_thresh: 0.1       # second-stage threshold (recovers weak boxes of partly hidden people)
+new_track_thresh: 0.4       # was 0.25: fewer spurious tracks, each of which burns an ID
+track_buffer: 30            # overridden by occlusion_keep_s
+match_thresh: 0.8
+fuse_score: True
+
+# Camera motion compensation. The Go2 camera moves and shakes; on the static test sequences it made
+# no difference, on the moving ones it was neutral, and it costs ~1 fps.
+gmc_method: sparseOptFlow
+
+# Appearance matching is OFF. With the YOLO detector's own features it hurt (more ID switches); a
+# proper person re-identification model per detection runs at ~3 fps on this CPU.
+with_reid: False
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+model: auto
