@@ -10,6 +10,9 @@ services:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
       - ROS_DOMAIN_ID=0
+      # Scene to load (go2_scenarios/scenes): empty, open_field, office,
+      # plaza, warehouse. E.g. GO2_WORLD=plaza docker compose up
+      - GO2_WORLD=${GO2_WORLD:-empty}
       # Rendering runs on Mesa (Intel/AMD iGPU via /dev/dri). Set
       # LIBGL_ALWAYS_SOFTWARE=1 to force CPU rendering (llvmpipe) instead.
       - LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-0}

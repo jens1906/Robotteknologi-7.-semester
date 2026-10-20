@@ -77,3 +77,9 @@
   ros_type_name: "sensor_msgs/msg/CameraInfo"
   gz_type_name: "gz.msgs.CameraInfo"
   direction: GZ_TO_ROS
+
+# ---- Entity poses (go2_scenarios scene_runner moves the movers with it) ----
+- service_name: "/world/go2_world/set_pose"
+  ros_type_name: "ros_gz_interfaces/srv/SetEntityPose"
+  gz_req_type_name: "gz.msgs.Pose"
+  gz_rep_type_name: "gz.msgs.Boolean"
