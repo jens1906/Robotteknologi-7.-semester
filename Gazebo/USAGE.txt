@@ -43,13 +43,61 @@ RUN
 
 
 EXPECTED STARTUP SEQUENCE
-  1. Gazebo Jetty window opens (empty world)
+  1. Gazebo Jetty window opens (empty world unless GO2_WORLD is set, see WORLDS)
   2. Go2 robot spawns in the world at z=0.4m
   3. Robot drops to ground and stands up (CHAMP controller)
   4. All robot topics become available after ~5 seconds
 
   If the robot falls over on startup: this is normal on first run while
   CHAMP's initial stance phase settles. It self-recovers.
+
+
+WORLDS
+  Pick a world with GO2_WORLD (default: empty):
+    GO2_WORLD=plaza docker compose up
+  or inside the container: ros2 launch go2_sim go2_sim.launch.py world:=plaza
+
+  empty        flat ground only (the reference for check_interface/replay)
+  open_field   scattered crates and pillars, 2 pedestrians, 1 cart crossing
+  office       corridor + 2 rooms with doorways and furniture; people pass
+               the leader in the corridor, a cleaning cart, U-turn at the end
+  plaza        fountain, benches, planters; 7 pedestrians crossing and walking
+               right next to the leader (distractors), 2 carts
+  warehouse    shelf rows with 3 m aisles, pallet stacks, 2 forklifts, a worker
+
+  Every world but empty has a human leader. It starts 1.5 m in front of the
+  Go2, facing away, waits 15 s (sim time) for the robot to stand up, then walks
+  a fixed loop forever at 0.5 m/s (the Go2's sport API caps at 0.6 m/s).
+  People and movers are scripted, so every run is the same.
+
+  Ground truth for evaluating the follower (sim-only, like the other /sim/*
+  topics; robot code must not use them). Frame odom (= world, the Go2 spawns
+  at the origin), position on the ground, wall-clock stamps like the robot:
+    /sim/leader/pose   geometry_msgs/PoseStamped   20 Hz sim time
+    /sim/people        geometry_msgs/PoseArray     20 Hz sim time, all people incl. leader
+  (20 Hz of sim time: fewer per wall-clock second when the sim runs slower
+  than real time, e.g. headless on the CPU.)
+  The robot's own ground truth is /sim/odometry.
+
+  Worlds are YAML files in src/go2_scenarios/scenes/; the SDF is generated at
+  launch. To add one, copy a scene, edit it, rebuild, and run with its name.
+  Loading a scene checks it: names are unique, nothing within 1 m of the spawn
+  point, and no person or mover path runs into a static object.
+    static:  box (pose [x, y, yaw], size [x, y, z]), cylinder (radius,
+             length), wall (from [x, y], to [x, y], height, thickness)
+    movers:  box/cylinder moved along path at speed (kinematic, pingpong)
+    people:  walking person along path at speed (mode loop or pingpong,
+             start_delay); the one named "leader" is the leader
+
+  Limitations:
+  - People (Gazebo actors) have no collision: the Go2 walks through them.
+    The lidar, head camera and RealSense do see them.
+  - All people use the same mesh (src/go2_scenarios/models/walk.dae, from
+    Gazebo classic), so the leader looks like everyone else.
+  - At corners people turn over their last 0.25 m and Gazebo rounds the
+    corner slightly, so the ground truth is off by a few cm there.
+  - Movers are moved through /world/go2_world/set_pose at 20 Hz, so they
+    move in small steps, and a robot driving into one does not push it.
 
 
 ROBOT INTERFACE (what robot code sees)
@@ -146,6 +194,23 @@ GPU / NO GPU
 
   NVIDIA GPU passthrough (faster sensor rendering):
     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+  Needed on machines whose only GPU is NVIDIA: Mesa can't drive it, so the
+  default falls back to CPU rendering and the sim runs at ~0.2-0.3x real time
+  (controller_manager then warns "No clock received"). With the GPU it runs
+  at ~0.95x, also with people in the world.
+
+  One-time host setup (Arch shown; other distros: install
+  nvidia-container-toolkit from NVIDIA's repo):
+    sudo pacman -S nvidia-container-toolkit
+    sudo nvidia-ctk runtime configure --runtime=docker
+    sudo systemctl restart docker
+  Rootless Docker (`docker context ls` shows rootless *) instead needs:
+    sudo sed -i 's/^#no-cgroups = false/no-cgroups = true/' \
+        /etc/nvidia-container-runtime/config.toml
+    nvidia-ctk runtime configure --runtime=docker \
+        --config=$HOME/.config/docker/daemon.json
+    systemctl --user restart docker
+  Check: docker run --rm --gpus all ubuntu nvidia-smi   (lists the GPU)
 
 
 KNOWN LIMITATIONS

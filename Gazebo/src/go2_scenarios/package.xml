@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>go2_scenarios</name>
+  <version>0.1.0</version>
+  <description>
+    Worlds for the Go2 sim: static and moving obstacles and a walking human
+    leader, described as YAML scenes and turned into SDF at launch. scene_runner
+    moves the obstacles and publishes the leader's ground-truth pose.
+  </description>
+  <maintainer email="todo@todo.com">TODO</maintainer>
+  <license>BSD</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>ros_gz_interfaces</depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

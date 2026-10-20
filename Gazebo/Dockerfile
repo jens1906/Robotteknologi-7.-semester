@@ -23,6 +23,13 @@ RUN apt-get update && apt-get install -y \
     python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 
+# Let EGL (headless rendering) use the NVIDIA driver that nvidia-container-toolkit
+# mounts with docker-compose.gpu.yml; the toolkit adds the library but not this
+# glvnd vendor file. Without an NVIDIA GPU, glvnd skips it and uses Mesa.
+RUN mkdir -p /usr/share/glvnd/egl_vendor.d && \
+    echo '{"file_format_version": "1.0.0", "ICD": {"library_path": "libEGL_nvidia.so.0"}}' \
+        > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+
 WORKDIR /ros2_ws
 
 # ---- unitree_go / unitree_api messages + shared Go2 config ----
@@ -103,6 +110,7 @@ COPY Gazebo/upstream/unitree_ros/robots/go2_description/ /upstream/go2_descripti
 COPY Gazebo/src/go2_description/    src/go2_description/
 COPY Gazebo/src/go2_sim/            src/go2_sim/
 COPY Gazebo/src/go2_robot_emulator/ src/go2_robot_emulator/
+COPY Gazebo/src/go2_scenarios/      src/go2_scenarios/
 COPY Gazebo/tools/                  /ros2_ws/tools/
 
 # ---- Dependencies ----
@@ -129,4 +137,4 @@ RUN echo ". /opt/ros/lyrical/setup.sh" >> /root/.bashrc && \
 CMD ["/bin/bash", "-c", \
      ". /opt/ros/lyrical/setup.sh && \
       . /ros2_ws/install/setup.sh && \
-      ros2 launch go2_sim go2_sim.launch.py"]
+      ros2 launch go2_sim go2_sim.launch.py world:=${GO2_WORLD:-empty}"]

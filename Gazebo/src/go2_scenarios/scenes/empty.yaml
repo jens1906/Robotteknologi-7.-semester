@@ -1,0 +1,2 @@
+# Flat ground only. The default world: tools/check_interface.py and
+# tools/replay_commands.py compare against the robot in it.

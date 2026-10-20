@@ -1,0 +1,27 @@
+# Open field: scattered crates and pillars, a ~54 m leader loop with gentle and
+# sharp turns, two pedestrians and a cart crossing the leader's path.
+# Box/cylinder pose: [x, y, yaw]; size: [x, y, z] m. Paths: [x, y] waypoints.
+
+static:
+  - {type: box, name: crate_1, pose: [5, -2.5, 0.3], size: [1.0, 1.0, 1.0], color: [0.55, 0.35, 0.2]}
+  - {type: box, name: crate_2, pose: [12, -2, 0], size: [1.2, 0.8, 0.8], color: [0.55, 0.35, 0.2]}
+  - {type: box, name: crate_3, pose: [0, 5, 0.8], size: [1.2, 0.8, 0.8], color: [0.55, 0.35, 0.2]}
+  - {type: box, name: container, pose: [2, -7, 0], size: [4.0, 1.6, 2.0], color: [0.2, 0.4, 0.7]}
+  - {type: box, name: block, pose: [7.6, 7.5, 0.785], size: [1.5, 1.5, 1.0], color: [0.5, 0.5, 0.5]}
+  - {type: box, name: barrier, pose: [-9, -2, 1.57], size: [3.0, 0.3, 1.0], color: [0.9, 0.9, 0.2]}
+  - {type: cylinder, name: pillar_1, pose: [9, 8], radius: 0.3, length: 2.0}
+  - {type: cylinder, name: pillar_2, pose: [-2.5, 10.5], radius: 0.3, length: 2.0}
+  - {type: cylinder, name: pillar_3, pose: [14, 7], radius: 0.4, length: 2.5}
+  - {type: cylinder, name: barrel, pose: [-4.5, 4.5], radius: 0.3, length: 0.9, color: [0.2, 0.6, 0.2]}
+
+movers:
+  - {name: cart, type: box, size: [1.0, 0.6, 0.8], path: [[9.5, -6], [9.5, 6]], speed: 0.6, color: [0.8, 0.2, 0.2]}
+
+people:
+  # Starts 1.5 m in front of the Go2 facing away, waits for it to stand up.
+  - name: leader
+    path: [[1.5, 0], [8, 0], [12, 4], [12, 10], [4, 12], [-4, 8], [-6, 2], [-2, -4]]
+    speed: 0.5
+    start_delay: 15
+  - {name: walker_1, path: [[6, -11], [6, 13]], mode: pingpong, speed: 1.1}
+  - {name: walker_2, path: [[-12, -8], [-12, 6], [-7, 13], [2, 13]], mode: pingpong, speed: 1.0}

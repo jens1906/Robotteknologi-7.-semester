@@ -1,0 +1,46 @@
+# Warehouse: 2.5 m tall shelf rows forming 3 m aisles off a main aisle that
+# starts at the Go2. The leader zig-zags up and down the aisles, two forklifts
+# drive the south back aisle and the open loading area, and a worker walks
+# the loading area. Pallet stacks narrow some aisles.
+#
+#  y=10 +-------------------------------------------+
+#       |          back aisle (north)               |
+#       |     ##  ##  ##  ##                        |
+#       |     ##  ##  ##  ##        loading area    |
+#  Go2 >|  main aisle                                |
+#       |     ##  ##  ##  ##                        |
+#       |     ##  ##  ##  ##                        |
+#       |          back aisle (south)               |
+# y=-10 +-------------------------------------------+
+#      x=-4   6  10  14  18                        26
+
+static:
+  - {type: wall, name: wall_south, from: [-4, -10], to: [26, -10], height: 4.0}
+  - {type: wall, name: wall_north, from: [-4, 10], to: [26, 10], height: 4.0}
+  - {type: wall, name: wall_west, from: [-4, -10], to: [-4, 10], height: 4.0}
+  - {type: wall, name: wall_east, from: [26, -10], to: [26, 10], height: 4.0}
+  - {type: box, name: shelf_1n, pose: [6, 4.25, 0], size: [1.0, 5.5, 2.5], color: [0.9, 0.5, 0.1]}
+  - {type: box, name: shelf_1s, pose: [6, -4.25, 0], size: [1.0, 5.5, 2.5], color: [0.9, 0.5, 0.1]}
+  - {type: box, name: shelf_2n, pose: [10, 4.25, 0], size: [1.0, 5.5, 2.5], color: [0.9, 0.5, 0.1]}
+  - {type: box, name: shelf_2s, pose: [10, -4.25, 0], size: [1.0, 5.5, 2.5], color: [0.9, 0.5, 0.1]}
+  - {type: box, name: shelf_3n, pose: [14, 4.25, 0], size: [1.0, 5.5, 2.5], color: [0.9, 0.5, 0.1]}
+  - {type: box, name: shelf_3s, pose: [14, -4.25, 0], size: [1.0, 5.5, 2.5], color: [0.9, 0.5, 0.1]}
+  - {type: box, name: shelf_4n, pose: [18, 4.25, 0], size: [1.0, 5.5, 2.5], color: [0.9, 0.5, 0.1]}
+  - {type: box, name: shelf_4s, pose: [18, -4.25, 0], size: [1.0, 5.5, 2.5], color: [0.9, 0.5, 0.1]}
+  # Pallet stacks narrowing aisles
+  - {type: box, name: pallets_1, pose: [12.9, -4, 0], size: [1.0, 1.2, 1.2], color: [0.6, 0.45, 0.25]}
+  - {type: box, name: pallets_2, pose: [7.1, 5, 0], size: [1.0, 1.2, 0.6], color: [0.6, 0.45, 0.25]}
+  - {type: box, name: pallets_3, pose: [25, 4, 0], size: [1.2, 1.0, 1.5], color: [0.6, 0.45, 0.25]}
+  - {type: box, name: pallets_4, pose: [25, -4, 0], size: [1.2, 1.0, 0.3], color: [0.6, 0.45, 0.25]}
+  - {type: box, name: crates_1, pose: [-2.5, 6, 0], size: [1.5, 1.5, 1.5], color: [0.55, 0.35, 0.2]}
+
+movers:
+  - {name: forklift_1, type: box, size: [1.2, 0.9, 2.0], path: [[3, -8.5], [23, -8.5]], speed: 0.8, color: [0.95, 0.8, 0.1]}
+  - {name: forklift_2, type: box, size: [0.9, 1.2, 2.0], path: [[21.5, -7], [21.5, 7]], speed: 0.6, color: [0.95, 0.8, 0.1]}
+
+people:
+  - name: leader
+    path: [[1.5, 0], [8, 0], [8, 8.5], [12, 8.5], [12, -8.5], [16, -8.5], [16, 0]]
+    speed: 0.5
+    start_delay: 15
+  - {name: worker, path: [[23.5, 8.5], [23.5, -8.5]], mode: pingpong, speed: 0.8}

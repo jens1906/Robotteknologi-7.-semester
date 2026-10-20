@@ -1,4 +1,5 @@
 import os
+import tempfile
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -6,33 +7,65 @@ from launch.actions import (
     AppendEnvironmentVariable,
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    OpaqueFunction,
     RegisterEventHandler,
     TimerAction,
 )
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration, PythonExpression
+from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+from go2_scenarios import scene
+
+
+def world_actions(context):
+    """Gazebo with the chosen world, and the scene_runner that animates it."""
+    world = LaunchConfiguration('world').perform(context)
+    # The world SDF is generated from go2_scenarios/scenes/<world>.yaml.
+    sdf = tempfile.NamedTemporaryFile(
+        'w', prefix=f'go2_{world}_', suffix='.sdf', delete=False)
+    with sdf:
+        sdf.write(scene.to_sdf(scene.load(world)))
+
+    # headless:=true runs the Gazebo server only, rendering sensors offscreen
+    # (no X11 needed), e.g. for tools/check_interface.py and replay_commands.py.
+    headless = LaunchConfiguration('headless').perform(context) == 'true'
+    gz_mode = '-s --headless-rendering ' if headless else ''
+
+    gazebo = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(get_package_share_directory('ros_gz_sim'), 'launch', 'gz_sim.launch.py')
+        ),
+        launch_arguments={
+            'gz_args': f'-r -v 4 {gz_mode}{sdf.name}',
+            'on_exit_shutdown': 'true',
+        }.items(),
+    )
+
+    # Moves the movers and publishes /sim/leader/pose and /sim/people.
+    scene_runner = Node(
+        package='go2_scenarios',
+        executable='scene_runner',
+        name='scene_runner',
+        output='screen',
+        parameters=[{'use_sim_time': True, 'world': world}],
+    )
+    return [gazebo, scene_runner]
 
 
 def generate_launch_description():
 
     go2_description_share = get_package_share_directory('go2_description')
     go2_sim_share = get_package_share_directory('go2_sim')
-    ros_gz_sim_share = get_package_share_directory('ros_gz_sim')
 
     xacro_file = os.path.join(go2_description_share, 'urdf', 'go2_gazebo.urdf.xacro')
     bridge_config = os.path.join(go2_sim_share, 'config', 'bridge.yaml')
-    world_file = os.path.join(go2_sim_share, 'config', 'go2_world.sdf')
     gait_config = os.path.join(go2_description_share, 'config', 'gait.yaml')
     controllers_config = os.path.join(go2_description_share, 'config', 'ros2_controllers.yaml')
 
     use_sim_time = LaunchConfiguration('use_sim_time', default='true')
-    # headless:=true runs the Gazebo server only, rendering sensors offscreen
-    # (no X11 needed), e.g. for tools/check_interface.py and replay_commands.py.
-    gz_mode = PythonExpression([
-        "'-s --headless-rendering ' if '", LaunchConfiguration('headless'), "' == 'true' else ''"])
 
     robot_description = ParameterValue(Command(['xacro ', xacro_file]), value_type=str)
 
@@ -41,16 +74,8 @@ def generate_launch_description():
     gz_resource_path = AppendEnvironmentVariable(
         'GZ_SIM_RESOURCE_PATH', os.path.dirname(go2_description_share))
 
-    # 1. Gazebo Jetty simulator with our custom world
-    gazebo = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(ros_gz_sim_share, 'launch', 'gz_sim.launch.py')
-        ),
-        launch_arguments={
-            'gz_args': ['-r -v 4 ', gz_mode, world_file],
-            'on_exit_shutdown': 'true',
-        }.items(),
-    )
+    # 1. Gazebo Jetty simulator with the chosen world, plus its scene_runner
+    gazebo = OpaqueFunction(function=world_actions)
 
     # 2. robot_state_publisher — publishes TF from URDF + /joint_states
     robot_state_publisher = Node(
@@ -69,7 +94,7 @@ def generate_launch_description():
     )
 
     # 3. Spawn the Go2 into Gazebo
-    #    -world must match go2_world.sdf <world name="go2_world">
+    #    -world is the <world name> of every generated world
     #    -name must match bridge.yaml joint state path (.../model/go2/...)
     spawn_robot = Node(
         package='ros_gz_sim',
@@ -77,7 +102,7 @@ def generate_launch_description():
         name='spawn_go2',
         output='screen',
         arguments=[
-            '-world', 'go2_world',
+            '-world', scene.WORLD_NAME,
             '-name', 'go2',
             '-param', 'robot_description',
             '-x', '0.0',
@@ -174,6 +199,9 @@ def generate_launch_description():
                               description='Use simulation clock'),
         DeclareLaunchArgument('headless', default_value='false',
                               description='Gazebo server only, no GUI window'),
+        DeclareLaunchArgument('world', default_value='empty',
+                              description='Scene from go2_scenarios/scenes: empty, '
+                                          'open_field, office, plaza, warehouse'),
         gz_resource_path,
         gazebo,
         robot_state_publisher,

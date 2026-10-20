@@ -1,0 +1,49 @@
+# Office: a 3 m wide corridor (the Go2 starts at its west end) with two rooms
+# off its north side. The leader goes down the corridor, through room A and
+# room B, back out and returns along the corridor (U-turn at the east end).
+# People pass the leader in the corridor and walk in and out of the rooms;
+# a cleaning cart goes up and down the west end of the corridor.
+#
+#   y=8  +-------------+-------------+
+#        |   room A    |   room B    |
+#        |    desk     =    desk     |    = doorway
+#  y=1.5 +---- -----=--+---------=---+-----+
+#  Go2 > |                corridor         |
+# y=-1.5 +---------------------------------+
+#       x=-2      6     13           20   22
+
+static:
+  # Corridor
+  - {type: wall, name: corridor_south, from: [-2, -1.5], to: [22, -1.5], height: 2.5}
+  - {type: wall, name: corridor_west, from: [-2, -1.5], to: [-2, 1.5], height: 2.5}
+  - {type: wall, name: corridor_east, from: [22, -1.5], to: [22, 1.5], height: 2.5}
+  - {type: wall, name: corridor_north_1, from: [-2, 1.5], to: [8.4, 1.5], height: 2.5}
+  - {type: wall, name: corridor_north_2, from: [9.6, 1.5], to: [16.4, 1.5], height: 2.5}
+  - {type: wall, name: corridor_north_3, from: [17.6, 1.5], to: [22, 1.5], height: 2.5}
+  # Rooms
+  - {type: wall, name: room_a_west, from: [6, 1.5], to: [6, 8], height: 2.5}
+  - {type: wall, name: rooms_north, from: [6, 8], to: [20, 8], height: 2.5}
+  - {type: wall, name: rooms_divider_1, from: [13, 1.5], to: [13, 4.4], height: 2.5}
+  - {type: wall, name: rooms_divider_2, from: [13, 5.6], to: [13, 8], height: 2.5}
+  - {type: wall, name: room_b_east, from: [20, 1.5], to: [20, 8], height: 2.5}
+  # Furniture
+  - {type: box, name: cabinet, pose: [4, 1.1, 0], size: [1.0, 0.5, 1.2], color: [0.4, 0.4, 0.45]}
+  - {type: cylinder, name: plant, pose: [12, 1.15], radius: 0.25, length: 1.0, color: [0.2, 0.6, 0.2]}
+  - {type: box, name: desk_a, pose: [10, 6.8, 0], size: [1.6, 0.8, 0.75], color: [0.6, 0.45, 0.3]}
+  - {type: cylinder, name: chair_a, pose: [10, 5.9], radius: 0.3, length: 0.9, color: [0.2, 0.2, 0.2]}
+  - {type: box, name: shelf_a, pose: [6.4, 5, 0], size: [0.5, 2.0, 1.8], color: [0.6, 0.45, 0.3]}
+  - {type: box, name: desk_b, pose: [17.5, 6.8, 0], size: [1.6, 0.8, 0.75], color: [0.6, 0.45, 0.3]}
+  - {type: box, name: table_b, pose: [15, 3, 0], size: [1.2, 1.2, 0.75], color: [0.6, 0.45, 0.3]}
+
+movers:
+  - {name: cleaning_cart, type: box, size: [0.8, 0.5, 0.9], path: [[8, -0.8], [2.5, -0.8]], speed: 0.4, color: [0.9, 0.6, 0.1]}
+
+people:
+  - name: leader
+    path: [[1.5, 0], [9, 0], [9, 3], [11.5, 5], [15.5, 5], [17, 3], [17, 0], [20.5, 0], [20.5, 0.5], [2, 0.5]]
+    speed: 0.5
+    start_delay: 15
+  # Walks the corridor against the leader, passing close by.
+  - {name: colleague_1, path: [[20.5, -0.3], [10, -0.3]], mode: pingpong, speed: 1.0}
+  # Comes out of room B into the corridor and goes into room A.
+  - {name: colleague_2, path: [[18.5, 4.5], [17, 2.5], [17, -0.6], [9, -0.6], [9, 3], [8, 4]], mode: pingpong, speed: 0.9}
