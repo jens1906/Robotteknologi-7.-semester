@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the detector over MOT17 sequences through ROS and tabulate the ground-truth scores.
 
-Each run is the normal `ros2 run vision detector ... -p use_dataset:=true` (real time, frames are
+Each run is the normal `ros2 run vision_pre detector ... -p use_dataset:=true` (real time, frames are
 dropped like on the robot), so it takes about the length of the clip. Needs ROS and the workspace
-sourced; `scripts/vision.sh score ...` does that.
+sourced; `scripts/vision_pre.sh score ...` does that.
 
 Usage: scripts/score_tracking.py [--seqs 02 10 13] [--runs 3] [--variant "NAME=k:=v k2:=v2" ...]
   --seqs     MOT17 sequences in data/ (default: every data/mot17_* with a gt/gt.txt)
@@ -40,7 +40,7 @@ def default_seqs():
 
 
 def run_once(seq, params, timeout):
-    cmd = ['ros2', 'run', 'vision', 'detector', '--ros-args',
+    cmd = ['ros2', 'run', 'vision_pre', 'detector', '--ros-args',
            '-p', 'use_dataset:=true', '-p', f'video_path:=data/mot17_{seq}', '-p', 'show:=false']
     for p in params:
         cmd += ['-p', p]

@@ -12,6 +12,7 @@ dependencies = [
     "motmetrics>=1.4.0",
     "onnxruntime>=1.31.0",
     "opencv-python>=5.0.0.93",
+    "timm>=1.0.30",
     "transformers>=5.19.0",
     "ultralytics>=8.4.176",
 ]
