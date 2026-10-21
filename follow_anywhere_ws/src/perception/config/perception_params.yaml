@@ -11,28 +11,41 @@ perception_node:
     useVelocity: false       # false: velocities are published as NaN with velocity_valid = false
 
     # --- person detector + tracker --------------------------------------------------------------
-    detectorModelPath: yolov8n-pose.pt       # pose model: keypoints for depth sampling (and KPR later); relative = working directory
+    detectorModelFile: yolov8n-pose.pt       # in resource/models/ (scripts/fetch_models.py); pose model: keypoints for depth sampling
     detectorImageSize: 640                   # the camera's own resolution; 960 was ~2x slower on CPU
     minimumBoxSizePixels: 24                 # px, smaller detections are ignored
     trackerConfigFile: botsort.yaml          # in this package's config/
-    requestedDevice: auto                    # auto / cuda / cpu; auto warns loudly when it falls back to CPU
+    requestedDevice: auto                    # auto / cuda / cpu, for the detector and OSNet; auto warns loudly when it falls back to CPU
 
-    # --- re-identification + leader (thresholds measured on MOT17 for OSNet) ------------------
-    reidModel: osnet
-    reidAccept: 0.45                         # distance below which a person can be the leader
-    reidDrop: 0.82                           # distance above which the followed person looks wrong
-    reidMargin: 0.05                         # lead the best candidate needs over the second best
-    reidConfirm: 3                           # wins needed ...
-    reidConfirmWindow: 6                     # ... in a candidate's last comparisons
-    verifyPeriod: 1.0                        # s between checks of the followed person
-    searchPeriod: 0.3                        # s between searches
-    searchCandidates: 4                      # people compared per search
-    enrollViews: 8                           # views stored when enrolling (the permanent anchors)
-    enrollGap: 0.4                           # s between two stored views
-    rollingViews: 20                         # views learned while following, oldest go first
-    graceTime: 1.0                           # s the followed person may be missing (flicker) before searching
-    lostTime: 10.0                           # s of searching before the state becomes LOST
-    leaderFile: ~/.ros/follow_anywhere/leader_osnet.npz   # saved leader, loaded at start
+    # --- re-identification (OSNet) --------------------------------------------------------------
+    reidModelFile: osnet.onnx                # in resource/models/ (scripts/fetch_models.py)
+    reidThreads: 2                           # CPU threads for OSNet (leaves cores for the detector)
+    leaderFile: ~/.ros/follow_anywhere/perception_leader.npz   # saved leader, always loaded at start; deleted by /perception/clear_leader
+
+    # --- leader. Origin of each value: MEASURED = from MOT17 street video (static camera), CHOSEN = picked after a failure
+    # --- there, GUESS = engineering judgement, never tuned. NONE of them were tuned on the Go2 / RealSense yet.
+    reidAccept: 0.45                         # MEASURED: distance below which a person can be the leader (lets ~0.2% of other people through per comparison)
+    reidDrop: 0.82                           # MEASURED: distance above which the followed person looks wrong (above 99% of true views)
+    reidMargin: 0.05                         # CHOSEN: lead the best candidate needs over the second best (after a wrong person got through)
+    reidConfirm: 3                           # CHOSEN: wins needed ... (frames in a row are correlated, so not "in a row")
+    reidConfirmWindow: 6                     # CHOSEN: ... in a candidate's last comparisons
+    verifyPeriod: 0.2                        # s between OSNet checks of the followed person; was 1.0, 0 = every frame. ~14 ms per check on CPU
+    searchPeriod: 0.3                        # GUESS: s between searches
+    searchCandidates: 4                      # GUESS: people compared per search
+    enrollViews: 8                           # GUESS: views stored when enrolling (the permanent anchors)
+    enrollGap: 0.4                           # GUESS: s between two stored views, so they differ a little
+    enrollTimeout: 20.0                      # GUESS: s before an unfinished enrolment is given up
+    enrollGraceTime: 2.0                     # CHOSEN: s the person being enrolled may be missing (the tracker drops boxes for a few frames now and then)
+    enrollRebindIou: 0.6                     # GUESS: a new track this much on the enrolled person's last box is the same person (track id change)
+    rollingViews: 20                         # GUESS: views learned while following, oldest go first
+    learnDistance: 0.65                      # GUESS: a followed view up to this far from the stored ones is learned (wider than reidAccept, so a turned/relit leader is found again); lower = safer against learning a wrong person
+    noveltyDistance: 0.25                    # GUESS: a view closer than this to a stored one is not stored again
+    graceTime: 1.0                           # CHOSEN: s the followed person may be missing (flicker) before searching
+    lostTime: 10.0                           # NEW, untested: s of searching before the state becomes LOST
+    crossingIou: 0.15                        # GUESS: another person's box this much over the leader's: OSNet cannot tell them apart, the lock is dropped
+    competitorAge: 3.0                       # GUESS: s a visible person's latest distance still counts as a competitor
+    loseAfterChecks: 2                       # GUESS: checks in a row that say "different person" before the leader is dropped
+    recentDistanceTime: 2.0                  # NEW, untested: s a distance stays printed under a box
 
     # --- 3D position + Kalman filter ------------------------------------------------------------
     depthMin: 0.3                            # m, depth outside this range is not used

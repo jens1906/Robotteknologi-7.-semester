@@ -19,7 +19,7 @@ To include:
 - Click on a person: call /perception/calibrate_leader (PerceptionCalibrateLeader) with that person's
   track id; key 'c': call it with -1 (person nearest the image centre). Show the service's message
   ("enrolling #7" / "nobody there") on screen for a few seconds.
-- Keys: m mode, c calibrate centre, q quit.
+- Keys: m mode, c calibrate centre, r clear the leader, q quit.
 - Header line: perception state, shown fps, image age (now - stamp), how many images were dropped.
 - Warn on screen when no image or no perception result arrived for a while.
 - Drawing itself is in overlay.py.
@@ -37,6 +37,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 
 from perception_interface import overlay
 
@@ -60,6 +61,7 @@ PLACEHOLDER_IMAGE_SHAPE = (480, 640, 3)
 QUIT_KEYS = (ord('q'), 27)
 TOGGLE_MODE_KEY = ord('m')
 CALIBRATE_CENTER_KEY = ord('c')
+CLEAR_LEADER_KEY = ord('r')
 CENTER_PERSON_TRACK_ID = -1
 
 
@@ -108,6 +110,7 @@ class PerceptionViewer(Node):
 
         # Services
         self.calibrateLeaderClient = self.create_client(PerceptionCalibrateLeader, '/perception/calibrate_leader')
+        self.clearLeaderClient = self.create_client(Trigger, '/perception/clear_leader')
 
         self.create_timer(WINDOW_EVENT_PERIOD_SECONDS, self.HandleWindowEvents)
         cv2.namedWindow(WINDOW_NAME)
@@ -157,6 +160,8 @@ class PerceptionViewer(Node):
             self.exactMode = not self.exactMode
         if pressedKey == CALIBRATE_CENTER_KEY:
             self.CallCalibrateLeader(CENTER_PERSON_TRACK_ID)
+        if pressedKey == CLEAR_LEADER_KEY:
+            self.CallClearLeader()
         while self.pendingWindowClicks:
             windowX, windowY = self.pendingWindowClicks.pop(0)
             self.HandleWindowClick(windowX, windowY)
@@ -211,6 +216,12 @@ class PerceptionViewer(Node):
         request = PerceptionCalibrateLeader.Request()
         request.track_id = trackId
         self.calibrateLeaderClient.call_async(request).add_done_callback(self.HandleCalibrateLeaderAnswer)
+
+    def CallClearLeader(self):
+        if not self.clearLeaderClient.service_is_ready():
+            self.SetNotice(f'{self.clearLeaderClient.srv_name} is not available', overlay.NOTICE_COLOR)
+            return
+        self.clearLeaderClient.call_async(Trigger.Request()).add_done_callback(self.HandleCalibrateLeaderAnswer)
 
     def SetNotice(self, text, color):
         self.noticeText = text

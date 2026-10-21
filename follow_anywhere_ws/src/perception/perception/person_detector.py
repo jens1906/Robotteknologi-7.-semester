@@ -33,7 +33,10 @@ NO_CUDA_GPU_WARNING = 'no CUDA GPU found, the detector runs on the CPU which is 
 @dataclass
 class DetectedPerson:
     trackId: int
-    boundingBox: tuple
+    left: float
+    top: float
+    right: float
+    bottom: float
     confidence: float
     bodyKeypoints: np.ndarray
 
@@ -63,15 +66,14 @@ class PersonDetector:
         if trackingResult.boxes is None or trackingResult.boxes.id is None:
             return []
         trackIds = trackingResult.boxes.id.int().tolist()
-        boundingBoxes = trackingResult.boxes.xyxy.tolist()
+        allBoundingBoxValues = trackingResult.boxes.xyxy.tolist()
         confidences = trackingResult.boxes.conf.tolist()
         allBodyKeypoints = trackingResult.keypoints.data.cpu().numpy()
         detectedPeople = []
-        for trackId, boundingBox, confidence, bodyKeypoints in zip(trackIds, boundingBoxes, confidences,
-                                                                    allBodyKeypoints):
-            boxWidth = boundingBox[2] - boundingBox[0]
-            boxHeight = boundingBox[3] - boundingBox[1]
-            if boxWidth < self.minimumBoxSizePixels or boxHeight < self.minimumBoxSizePixels:
+        for trackId, boundingBoxValues, confidence, bodyKeypoints in zip(trackIds, allBoundingBoxValues, confidences,
+                                                                          allBodyKeypoints):
+            left, top, right, bottom = boundingBoxValues
+            if right - left < self.minimumBoxSizePixels or bottom - top < self.minimumBoxSizePixels:
                 continue
-            detectedPeople.append(DetectedPerson(trackId, tuple(boundingBox), confidence, bodyKeypoints))
+            detectedPeople.append(DetectedPerson(trackId, left, top, right, bottom, confidence, bodyKeypoints))
         return detectedPeople

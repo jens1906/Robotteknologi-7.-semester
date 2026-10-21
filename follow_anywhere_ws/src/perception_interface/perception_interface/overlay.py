@@ -4,8 +4,8 @@ To include:
 - Boxes of all tracked people with their tracker id; the leader in green, others in grey.
 - Under each box (show_distances): reid distance to the leader (if compared this frame) and the
   distance in metres (from the person's position, when position_valid).
-- Leader state banner: IDLE / ENROLLING (with progress) / FOLLOWING / SEARCHING / LOST, last seen
-  "x s ago" while searching or lost.
+- Leader state banner: IDLE / ENROLLING / FOLLOWING #id, and "NOT IN FRAME: last seen x s ago" (with the
+  last position when there is one) while the leader is not identified in the image.
 - Header line with mode (exact / live), fps and image age.
 - Click feedback: a ring where the user clicked and the calibration service's answer for a few seconds.
 - A person-under-the-mouse lookup (box containing the click point, the smallest if several overlap)
@@ -71,20 +71,31 @@ def DrawTrackedPeople(image, trackedPeople, showDistances):
 
 def DrawLeaderBanner(image, leaderState):
     if leaderState is None:
-        DrawLabel(image, 'LEADER: no leader_state yet', 0, BANNER_BOTTOM_PIXELS, HEADER_COLOR, 0.6)
-        return
-    bannerText = f'LEADER: {STATE_NAMES[leaderState.state]}'
-    if leaderState.state == FOLLOWING_STATE:
-        bannerText += f' #{leaderState.track_id}  {leaderState.distance:.1f} m'
-    if leaderState.state in (SEARCHING_STATE, LOST_STATE) and leaderState.last_seen_time.sec > 0:
-        secondsSinceSeen = ConvertStampToSeconds(leaderState.header.stamp) - ConvertStampToSeconds(
-            leaderState.last_seen_time)
-        bannerText += f'  last seen {secondsSinceSeen:.0f} s ago'
-    DrawLabel(image, bannerText, 0, BANNER_BOTTOM_PIXELS, STATE_COLORS[leaderState.state], 0.6)
+        bannerText, bannerColor = 'LEADER: no leader_state yet', HEADER_COLOR
+    elif leaderState.state in (FOLLOWING_STATE, SEARCHING_STATE, LOST_STATE) and not leaderState.leader_visible:
+        bannerText, bannerColor = DescribeLeaderOutOfFrame(leaderState), NOTICE_COLOR
+    elif leaderState.state == FOLLOWING_STATE:
+        bannerText, bannerColor = DescribeFollowedLeader(leaderState), LEADER_COLOR
+    else:
+        bannerText, bannerColor = f'LEADER: {STATE_NAMES[leaderState.state]}', STATE_COLORS[leaderState.state]
+    DrawLabel(image, bannerText, 0, BANNER_BOTTOM_PIXELS, bannerColor, 0.6)
 
 
-def ConvertStampToSeconds(stamp):
-    return stamp.sec + stamp.nanosec * 1e-9
+def DescribeLeaderOutOfFrame(leaderState):
+    if math.isnan(leaderState.seconds_since_seen):
+        return f'LEADER: {STATE_NAMES[leaderState.state]}, looking for the saved leader'
+    statusText = 'LEADER LOST' if leaderState.state == LOST_STATE else 'LEADER NOT IN FRAME'
+    description = f'{statusText}: last seen {leaderState.seconds_since_seen:.0f} s ago'
+    if not math.isnan(leaderState.last_seen_position.x):
+        description += f' at x {leaderState.last_seen_position.x:.1f} y {leaderState.last_seen_position.y:.1f} m'
+    return description
+
+
+def DescribeFollowedLeader(leaderState):
+    description = f'LEADER: FOLLOWING #{leaderState.track_id}'
+    if not math.isnan(leaderState.distance):
+        description += f'  {leaderState.distance:.1f} m'
+    return description
 
 
 def DrawHeader(image, text):

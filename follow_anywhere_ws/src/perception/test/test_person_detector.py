@@ -6,7 +6,7 @@ import pytest
 from perception import person_detector
 from perception.person_detector import NO_CUDA_GPU_WARNING, PersonDetector, SelectInferenceDevice
 
-MODEL_FILE = 'yolov8n-pose.pt'
+MODEL_FILE = os.path.join(os.path.dirname(__file__), '..', 'resource', 'models', 'yolov8n-pose.pt')
 
 
 def test_cpu_request_gives_cpu_without_warning():
@@ -23,7 +23,7 @@ def test_auto_with_cuda_uses_the_gpu(monkeypatch):
     assert SelectInferenceDevice('auto') == ('cuda:0', '')
 
 
-@pytest.mark.skipif(not os.path.exists(MODEL_FILE), reason=f'{MODEL_FILE} not in the working directory')
+@pytest.mark.skipif(not os.path.exists(MODEL_FILE), reason='yolov8n-pose.pt is not in resource/models (run scripts/fetch_models.py)')
 def test_blank_image_has_no_people():
     personDetector = PersonDetector(MODEL_FILE, requestedDevice='cpu')
     assert personDetector.DetectAndTrackPeople(np.zeros((480, 640, 3), np.uint8)) == []

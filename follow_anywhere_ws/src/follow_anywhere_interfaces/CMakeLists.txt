@@ -13,7 +13,7 @@ find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   # perception
-  "msg/PerceptionDetectorStats.msg"
+  "msg/PerceptionFrameStats.msg"
   "msg/PerceptionLeaderState.msg"
   "msg/PerceptionObstacle.msg"
   "msg/PerceptionObstacleArray.msg"
