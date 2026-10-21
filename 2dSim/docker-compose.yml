@@ -1,0 +1,29 @@
+services:
+  go2_sim2d:
+    build:
+      # Repo root: the image also builds follow_anywhere_ws's messages and
+      # Gazebo's go2_scenarios (Dockerfile.dockerignore limits what is sent).
+      context: ..
+      dockerfile: 2dSim/Dockerfile
+    image: go2_sim2d:latest
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - ROS_DOMAIN_ID=0
+      # Scene (go2_scenarios/scenes): empty, open_field, office, plaza,
+      # warehouse. E.g. GO2_WORLD=plaza docker compose up
+      - GO2_WORLD=${GO2_WORLD:-open_field}
+      # false: no window (headless)
+      - SIM2D_VIEWER=${SIM2D_VIEWER:-true}
+      # Scales all perception noise; 0 = exact ground truth
+      - SIM2D_NOISE=${SIM2D_NOISE:-1.0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    # SELinux (Fedora) blocks access to the host X11 socket otherwise.
+    security_opt:
+      - label=disable
+    # host networking: ros2 DDS discovery between container and host
+    network_mode: host
+    ipc: host
+    stdin_open: true
+    tty: true

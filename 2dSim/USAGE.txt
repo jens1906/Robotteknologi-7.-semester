@@ -1,0 +1,172 @@
+Go2 2D Simulation — Usage Guide
+================================
+
+WHAT THIS IS
+  A top-down 2D sim for testing the navigation stack before the perception
+  stack exists. The robot, the leader, people and obstacles live in a plane:
+  no physics, no rendering, no sensor optics.
+  - The robot is kinematic: it moves exactly as commanded through the sport
+    API, like the real Go2 (same topics as the Gazebo sim and the robot)
+  - fake_perception takes the place of the perception stack. It publishes
+    what that stack will publish: the leader, people and obstacles in polar
+    coordinates around base_link, with noise, limited to a lidar field and
+    a camera field, plus a noisy estimate of how they move
+  - The worlds are the same YAML scenes as the Gazebo sim
+    (Gazebo/src/go2_scenarios/scenes), with the same paths and timing
+
+  Nav code written against /api/sport/request, /utlidar/robot_odom and
+  /perception/detections runs unchanged here, on Gazebo (once a perception
+  node runs there) and on the robot.
+
+
+PREREQUISITES (Linux)
+  - Docker Engine + Docker Compose v2
+  - X11 display (for the viewer window)
+
+
+BUILD
+  cd 2dSim/
+  docker compose build
+
+
+RUN
+  xhost +local:docker
+  docker compose up
+
+  GO2_WORLD=plaza docker compose up       other world (default open_field)
+  SIM2D_VIEWER=false docker compose up    no window
+  SIM2D_NOISE=0 docker compose up         perception reports exact ground truth
+
+  Inside the container:
+    ros2 launch go2_sim2d sim2d.launch.py world:=office viewer:=true \
+        noise_scale:=1.0 odom_drift:=0.0 perception:=/path/to/params.yaml
+
+  Everything starts at once: no stand-up phase, the robot can be driven
+  immediately. The leader still waits its start_delay (15 s in the scenes)
+  before walking.
+
+
+WORLDS
+  empty, open_field, office, plaza, warehouse: see Gazebo/USAGE.txt (WORLDS).
+  Rebuild the image after editing a scene.
+  In 2D: static boxes, cylinders and walls are their footprints. Movers are
+  boxes/cylinders on their paths. People are circles of radius 0.25 m.
+
+
+VIEWER
+  Top-down, in odom (= world). Ground truth: static objects in their scene
+  colours, movers, people (the leader orange), the robot (black triangle, its
+  0.35 m footprint and its trail). The lidar field is the dashed circle, the
+  camera field the yellow wedge. Red dots are /perception/scan.
+  Detections are drawn where perception puts them (projected with the true
+  robot pose), so their noise is visible: a big marker at the centre, a small
+  one at the nearest point, and a velocity arrow (1 s of motion) for moving
+  ones. Colour = class (grey unknown, blue object, green person, magenta
+  leader). Circle = seen by the camera, square = lidar only.
+  The status line shows time, robot pose and speed, distance to the leader,
+  number of detections and collisions.
+  Keys: F follow the robot on/off, D detections, S scan, +/- zoom.
+
+
+ROBOT INTERFACE (what robot code sees)
+  Same names, types, frames and rates as the Gazebo sim (Gazebo/USAGE.txt),
+  stamped with wall-clock time; nothing is published on /tf.
+
+  Topic                       Type                          Rate    Frame
+  /utlidar/robot_odom         nav_msgs/Odometry             130 Hz  odom -> base_link
+  /utlidar/robot_pose         geometry_msgs/PoseStamped     17 Hz   odom
+  /sportmodestate             unitree_go/SportModeState     260 Hz  position, velocity
+  /lf/sportmodestate                                        18 Hz   (body frame), yaw,
+                                                                    mode, body_height
+  /api/sport/response         unitree_api/Response          one per request
+
+  Sport API (/api/sport/request):
+    1008 Move {"x","y","z"}  clamped to 0.6 m/s, 0.4 m/s, 1.6 rad/s
+    1003 StopMove
+    1005 StandDown, 1001 Damp                         lie down, Move ignored
+    1004 StandUp, 1006 RecoveryStand, 1002 BalanceStand   stand
+  Motion stops if no Move arrives for 0.5 s. Speed follows the command with
+  a 0.1 s lag (response_time), like the robot.
+
+  TF: ros2 launch go2_bringup go2_tf.launch.py (from follow_anywhere_ws),
+  same as on the robot and the Gazebo sim.
+
+  Not emulated: /lowstate, /utlidar/cloud*, /utlidar/imu, cameras, video.
+  Use the Gazebo sim when you need those.
+
+
+FAKE PERCEPTION (takes the place of the perception stack)
+  /perception/detections  perception_msgs/DetectionArray  15 Hz  base_link
+  /perception/scan        sensor_msgs/LaserScan           15 Hz  base_link, 720 rays
+
+  perception_msgs (follow_anywhere_ws/src/perception_msgs) is the format the
+  real perception stack has to publish later. Per detection: track id, class
+  (unknown / object / person / leader) with confidence, which sensors saw it,
+  range and bearing of its centre and of its nearest point (for walls), each
+  with a std, footprint radius, and velocity over the ground expressed in
+  base_link, with a std and a moving flag.
+
+  How it is made from ground truth (parameters in
+  src/go2_sim2d/config/perception.yaml):
+  - Lidar field: 360 deg, 0.1-15 m. Camera field: +-45 deg, 0.3-8 m.
+    An object is seen by a sensor if its centre or its nearest point is in
+    that sensor's field and nothing else is in the straight line to it
+    (occlusion: false turns that off). Sensors sit at base_link.
+  - Only the camera classifies: people -> person, the leader -> leader
+    (leader_confusion_prob: chance it is reported as a plain person),
+    others -> object. Seen only by the lidar -> unknown.
+  - Gaussian noise. Lidar range std 0.02 m + 1 % of the range, bearing 1 deg.
+    Camera range std 0.05 m + 5 %, bearing 0.5 deg. When both sensors see an
+    object, the lidar's range and the camera's bearing are used.
+  - Velocity: true ground velocity (finite differences of the ground truth),
+    noise of 0.05 m/s + 5 % of the speed per axis, then a first-order filter
+    (velocity_alpha). Static objects report ~0 plus noise. moving = speed
+    above 0.1 m/s.
+  - dropout_prob: chance an object is missing from a frame (default 3 %).
+  - IDs are stable per object (a perfect tracker).
+  - noise_scale scales all noise; 0 gives exact ground truth.
+
+  fake_perception reads only the /sim/* ground truth and the scene file, not
+  the sim's internals.
+
+
+GROUND TRUTH (sim only; robot code must not use it)
+  /sim/odometry      nav_msgs/Odometry          50 Hz  true robot pose, odom
+  /sim/leader/pose   geometry_msgs/PoseStamped  50 Hz  odom
+  /sim/people        geometry_msgs/PoseArray    50 Hz  all people incl. leader
+  /sim/movers        geometry_msgs/PoseArray    50 Hz  scene order
+  /sim/collisions    std_msgs/UInt32            50 Hz  contacts so far
+
+  Collisions: the robot (a 0.35 m circle) stops in front of static objects
+  and movers instead of pushing them; it can always back out. People walk
+  through it (like the Gazebo actors). Each new contact with an object or a
+  person counts once and is logged.
+
+  /utlidar/robot_odom equals the ground truth unless odom_drift > 0
+  (relative error per velocity component, integrated, so it drifts).
+
+
+DRIVING FROM follow_anywhere_ws
+  With the sim running, on the host:
+    cd follow_anywhere_ws && source install/setup.bash
+    export ROS_DOMAIN_ID=0 FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+    ros2 run manual_controller keyboard_teleop
+  FASTDDS_BUILTIN_TRANSPORTS: the container runs as root, so host processes
+  can't read its Fast DDS shared memory (see follow_anywhere_ws/README.md).
+
+
+TESTS
+  Geometry and fake perception (no ROS needed):
+    cd 2dSim/src/go2_sim2d && python3 -m pytest test
+  In the container: cd /ros2_ws/src/go2_sim2d && python3 -m pytest test
+
+
+LIMITATIONS
+  - No odometry or IMU noise unless odom_drift is set. No body motion,
+    slipping or gait.
+  - Both sensors sit at base_link. The mounts in go2_mounts.yaml are not used
+    for the fields.
+  - No false positives, no id switches, no merged or split objects. A wall
+    is one detection with its centre and its nearest point.
+  - Occlusion is all-or-nothing per point (centre or nearest point) and
+    ignores height: a low barrel hides a person behind it.
