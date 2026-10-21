@@ -8,8 +8,8 @@ ROS2 (Lyrical) workspace for the follow-anywhere project on the physical Unitree
 | `unitree_go` | Go2 state/command messages (`/sportmodestate`, `/lowstate`, ...). Backbone. |
 | `manual_controller` | WASD/arrow-key manual control. |
 | `follow_anywhere_interfaces` | Messages of all parts, named after the owning part (`Perception...`, later `Navigation...`). |
-| `perception` | Leader identification, people tracking and obstacles from the RealSense (+ Go2 lidar and odometry). Skeleton: files describe what goes in them. Run: `ros2 launch perception perception.launch.py`. |
-| `perception_interface` | Viewer for perception, runs on the laptop: compressed camera feed with boxes and leader, click a person to calibrate. Skeleton. Run: `ros2 launch perception_interface viewer.launch.py`. |
+| `perception` | Person detection (YOLO pose + BoT-SORT) on the RealSense colour image, publishes `/perception/tracked_people`. Leader, depth, obstacles come in later steps. Run: `ros2 launch perception perception.launch.py`. |
+| `perception_interface` | Viewer for perception, runs on the laptop: compressed camera feed with boxes and track ids; click a person to calibrate (service comes with the leader step). Run: `ros2 launch perception_interface viewer.launch.py`. |
 | `navigation` | Placeholder. Add `<depend>unitree_go</depend>` to use the Go2 messages. |
 
 `unitree_api` and `unitree_go` are the Lyrical-patched copies from `go2_real_ws/src`. Keep their names, since the type names must match what the robot publishes.

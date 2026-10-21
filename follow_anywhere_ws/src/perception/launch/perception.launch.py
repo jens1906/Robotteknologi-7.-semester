@@ -1,11 +1,12 @@
 """Start perception: RealSense driver, the camera's mounting TF and the perception node.
 
     ros2 launch perception perception.launch.py
-    ros2 launch perception perception.launch.py start_camera:=false     # replaying a rosbag
-    ros2 launch perception perception.launch.py camera_x:=0.28 camera_z:=0.10
+    ros2 launch perception perception.launch.py startCamera:=false     # replaying a rosbag
+    ros2 launch perception perception.launch.py cameraX:=0.28 cameraZ:=0.10
 
 The Go2 lidar (/utlidar/cloud_base) and odometry (/utlidar/robot_odom) come from the robot itself;
-nothing is started for them here. Which topics are used is set in config/perception_params.yaml.
+nothing is started for them here. Topic names are written in perception_node.py: remap them in this file if the
+camera uses another name.
 """
 import os
 
@@ -18,17 +19,17 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 # where the RealSense sits on the Go2, relative to base_link (m, rad). Not measured yet: all 0.
-CAMERA_MOUNT = {'camera_x': '0.0', 'camera_y': '0.0', 'camera_z': '0.0',
-                'camera_roll': '0.0', 'camera_pitch': '0.0', 'camera_yaw': '0.0'}
+CAMERA_MOUNT = {'cameraX': '0.0', 'cameraY': '0.0', 'cameraZ': '0.0',
+                'cameraRoll': '0.0', 'cameraPitch': '0.0', 'cameraYaw': '0.0'}
 
 
 def generate_launch_description():
     share = get_package_share_directory('perception')
     args = [
-        DeclareLaunchArgument('params_file',
+        DeclareLaunchArgument('paramsFile',
                               default_value=os.path.join(share, 'config', 'perception_params.yaml'),
                               description='perception node parameters'),
-        DeclareLaunchArgument('start_camera', default_value='true',
+        DeclareLaunchArgument('startCamera', default_value='true',
                               description='start the RealSense driver (false when replaying a rosbag)'),
         *[DeclareLaunchArgument(name, default_value=value,
                                 description='camera mounting on base_link (m / rad), measure on the robot')
@@ -48,18 +49,18 @@ def generate_launch_description():
             'rgb_camera.color_profile': '640x480x30',
             'depth_module.depth_profile': '640x480x30',
         }.items(),
-        condition=IfCondition(LaunchConfiguration('start_camera')))
+        condition=IfCondition(LaunchConfiguration('startCamera')))
 
     # base_link -> camera_link: connects the camera to the robot (the Go2 publishes no TF for it)
     camera_mount = Node(
         package='tf2_ros', executable='static_transform_publisher', name='camera_mount_tf',
-        arguments=['--x', LaunchConfiguration('camera_x'), '--y', LaunchConfiguration('camera_y'),
-                   '--z', LaunchConfiguration('camera_z'), '--roll', LaunchConfiguration('camera_roll'),
-                   '--pitch', LaunchConfiguration('camera_pitch'), '--yaw', LaunchConfiguration('camera_yaw'),
+        arguments=['--x', LaunchConfiguration('cameraX'), '--y', LaunchConfiguration('cameraY'),
+                   '--z', LaunchConfiguration('cameraZ'), '--roll', LaunchConfiguration('cameraRoll'),
+                   '--pitch', LaunchConfiguration('cameraPitch'), '--yaw', LaunchConfiguration('cameraYaw'),
                    '--frame-id', 'base_link', '--child-frame-id', 'camera_link'])
 
     perception = Node(
         package='perception', executable='perception_node', name='perception_node', output='screen',
-        parameters=[LaunchConfiguration('params_file')])
+        parameters=[LaunchConfiguration('paramsFile')])
 
     return LaunchDescription([*args, realsense, camera_mount, perception])

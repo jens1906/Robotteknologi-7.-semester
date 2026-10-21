@@ -1,57 +1,46 @@
-# Parameters of the perception node. Loaded by launch/perception.launch.py (params_file:=... to use another).
+# Parameters of the perception node. Loaded by launch/perception.launch.py (paramsFile:=... to use another).
 # Frames: everything published is in base_link (x forward, y left, z up). Units: m, s, rad.
+# Topic names are not parameters: they are written in perception_node.py (change them with a remapping in the launch file).
 perception_node:
   ros__parameters:
-    # --- inputs ---------------------------------------------------------------------------------
-    color_topic: /camera/camera/color/image_raw
-    depth_topic: /camera/camera/aligned_depth_to_color/image_raw
-    camera_info_topic: /camera/camera/color/camera_info
-    lidar_topic: /utlidar/cloud_base          # Go2 lidar, already in base_link, ~15 Hz
-    odometry_topic: /utlidar/robot_odom       # Go2 odometry (nav_msgs/Odometry, odom -> base_link), ~145 Hz
-    base_frame: base_link
-
-    # --- outputs --------------------------------------------------------------------------------
-    leader_state_topic: /perception/leader_state       # PerceptionLeaderState
-    obstacles_topic: /perception/obstacles             # PerceptionObstacleArray
-    tracked_people_topic: /perception/tracked_people   # PerceptionTrackedPersonArray (debug, rosbags)
-    calibrate_service: /perception/calibrate_leader    # PerceptionCalibrateLeader: track_id to enrol, -1 = nearest the image centre
+    baseFrame: base_link
 
     # --- switches -------------------------------------------------------------------------------
-    use_lidar: true          # lidar for static obstacles; falls back to the depth image when no cloud arrives
-    use_odometry: false      # true: remove the robot's own motion from velocities (velocity_compensated)
-    use_velocity: false      # false: velocities are published as NaN with velocity_valid = false
+    useLidar: true           # lidar for static obstacles; falls back to the depth image when no cloud arrives
+    useOdometry: false       # true: remove the robot's own motion from velocities (velocity_compensated)
+    useVelocity: false       # false: velocities are published as NaN with velocity_valid = false
 
     # --- person detector + tracker --------------------------------------------------------------
-    detector_model: yolov8n-pose.pt          # pose model: keypoints for depth sampling (and KPR later)
-    detector_imgsz: 640                      # the camera's own resolution; 960 was ~2x slower on CPU
-    detector_min_box: 24                     # px, smaller detections are ignored
-    tracker_config: botsort.yaml             # in this package's config/
-    device: auto                             # auto / cuda / cpu; auto warns loudly when it falls back to CPU
+    detectorModelPath: yolov8n-pose.pt       # pose model: keypoints for depth sampling (and KPR later); relative = working directory
+    detectorImageSize: 640                   # the camera's own resolution; 960 was ~2x slower on CPU
+    minimumBoxSizePixels: 24                 # px, smaller detections are ignored
+    trackerConfigFile: botsort.yaml          # in this package's config/
+    requestedDevice: auto                    # auto / cuda / cpu; auto warns loudly when it falls back to CPU
 
     # --- re-identification + leader (thresholds measured on MOT17 for OSNet) ------------------
-    reid_model: osnet
-    reid_accept: 0.45                        # distance below which a person can be the leader
-    reid_drop: 0.82                          # distance above which the followed person looks wrong
-    reid_margin: 0.05                        # lead the best candidate needs over the second best
-    reid_confirm: 3                          # wins needed ...
-    reid_confirm_window: 6                   # ... in a candidate's last comparisons
-    verify_period: 1.0                       # s between checks of the followed person
-    search_period: 0.3                       # s between searches
-    search_candidates: 4                     # people compared per search
-    enroll_views: 8                          # views stored when enrolling (the permanent anchors)
-    enroll_gap: 0.4                          # s between two stored views
-    rolling_views: 20                        # views learned while following, oldest go first
-    grace_time: 1.0                          # s the followed person may be missing (flicker) before searching
-    lost_time: 10.0                          # s of searching before the state becomes LOST
-    leader_file: ~/.ros/follow_anywhere/leader_osnet.npz   # saved leader, loaded at start
+    reidModel: osnet
+    reidAccept: 0.45                         # distance below which a person can be the leader
+    reidDrop: 0.82                           # distance above which the followed person looks wrong
+    reidMargin: 0.05                         # lead the best candidate needs over the second best
+    reidConfirm: 3                           # wins needed ...
+    reidConfirmWindow: 6                     # ... in a candidate's last comparisons
+    verifyPeriod: 1.0                        # s between checks of the followed person
+    searchPeriod: 0.3                        # s between searches
+    searchCandidates: 4                      # people compared per search
+    enrollViews: 8                           # views stored when enrolling (the permanent anchors)
+    enrollGap: 0.4                           # s between two stored views
+    rollingViews: 20                         # views learned while following, oldest go first
+    graceTime: 1.0                           # s the followed person may be missing (flicker) before searching
+    lostTime: 10.0                           # s of searching before the state becomes LOST
+    leaderFile: ~/.ros/follow_anywhere/leader_osnet.npz   # saved leader, loaded at start
 
     # --- 3D position + Kalman filter ------------------------------------------------------------
-    depth_min: 0.3                           # m, depth outside this range is not used
-    depth_max: 8.0
-    kalman_process_noise: 1.0                # placeholder, tune: how fast velocities may change (m/s^2)
-    kalman_measurement_noise: 0.1            # placeholder, tune: position noise of one measurement (m)
-    track_timeout: 1.0                       # s without measurement before a filter is dropped
+    depthMin: 0.3                            # m, depth outside this range is not used
+    depthMax: 8.0
+    kalmanProcessNoise: 1.0                  # placeholder, tune: how fast velocities may change (m/s^2)
+    kalmanMeasurementNoise: 0.1              # placeholder, tune: position noise of one measurement (m)
+    trackTimeout: 1.0                        # s without measurement before a filter is dropped
 
     # --- obstacles ------------------------------------------------------------------------------
-    obstacle_max_range: 6.0                  # m, farther points are ignored
-    ground_height: 0.05                      # m above the ground plane that counts as ground
+    obstacleMaxRange: 6.0                    # m, farther points are ignored
+    groundHeight: 0.05                       # m above the ground plane that counts as ground
