@@ -3,11 +3,28 @@
 <package format="3">
   <name>perception</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Leader identification, people tracking and obstacles for the follow-anywhere Go2, from the RealSense camera (+ Go2 lidar and odometry).</description>
   <maintainer email="jens1906@gmail.com">jens</maintainer>
   <license>TODO: License declaration</license>
 
+  <!-- ROS dependencies. The python-only ones (ultralytics, torch, onnxruntime) come from the
+       workspace .venv, not from here. -->
   <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
+  <depend>tf2_ros</depend>
+  <depend>follow_anywhere_interfaces</depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <!-- lets the RealSense driver also publish .../image_raw/compressed (JPEG) for the viewer;
+       compression only runs while someone subscribes to it -->
+  <exec_depend>compressed_image_transport</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

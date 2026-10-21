@@ -1,0 +1,17 @@
+# Parameters of the perception viewer (runs on the laptop). Loaded by launch/viewer.launch.py.
+perception_viewer:
+  ros__parameters:
+    # inputs. Only the COMPRESSED image: a raw 640x480 colour image at 30 fps is ~27 MB/s over WiFi,
+    # the JPEG version ~1-2 MB/s. Never point this at image_raw.
+    image_topic: /camera/camera/color/image_raw/compressed     # sensor_msgs/CompressedImage
+    tracked_people_topic: /perception/tracked_people          # PerceptionTrackedPersonArray
+    leader_state_topic: /perception/leader_state              # PerceptionLeaderState
+    calibrate_service: /perception/calibrate_leader           # PerceptionCalibrateLeader
+
+    # display
+    exact_mode: true          # true (B): only images that have a perception result, boxes exactly on people.
+                              # false (A): every image with the newest boxes (smooth, boxes trail a little).
+                              # Key 'm' switches while running.
+    image_buffer: 30          # images kept to find the one with the same timestamp as a result (~1 s at 30 fps)
+    window_width: 960         # px, the window can be resized
+    show_distances: true      # reid distance and metres under each box
