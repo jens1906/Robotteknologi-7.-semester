@@ -64,7 +64,11 @@ class FollowLeader(Node):
                 self.last_seen = now
                 
             else:
-                obstacles.append((i.nearest_range, i.nearest_bearing))
+                speed_triplet = (0.0, 0.0, 0.0)
+                if i.moving:
+                    speed_triplet = (i.speed_x, i.speed_y, i.velocity_std)
+                
+                obstacles.append((i.nearest_range, i.nearest_bearing, speed_triplet))
 
         self.obstacles = obstacles
                 
@@ -123,23 +127,32 @@ class FollowLeader(Node):
         v = np.zeros(2)
         p = 0
 
+
         # convert obs to Cartesian coordinates
-        obstacles = np.asarray([[r * math.cos(b), r * math.sin(b)] for r, b in self.obstacles])
+        obstacles = np.asarray([[r * math.cos(b), r * math.sin(b), s[0], s[1]] for r, b, s in self.obstacles])
+        obstacle_std = np.asarray([s[2] for r, b, s in self.obstacles])  # extract the std deviations
+        if len(obstacles) > 0:
+            obstacle_speed = np.linalg.norm(obstacles[:, 2:], axis=1)  # compute the speed of each obstacle
+            obstacles[obstacle_speed < obstacle_std * 2, 2: ] = 0 # set the velocity to zero for obstacles with low speed relative to their uncertainty
+        leader_speed = np.array([self.leader.velocity.x, self.leader.velocity.y])
+        if np.linalg.norm(leader_speed) < self.leader.velocity_std * 2:
+            leader_speed = np.zeros(2)
+
 
         for k in range(N):
-            constraints += [x[:, k + 1] == x[:, k] + dt * (B @ u[:, k])]
+            constraints += [x[:, k + 1] == x[:, k] + dt * (B @ u[:, k]) + dt * leader_speed]
             cost += cp.quad_form(x[:, k + 1], Q) + cp.quad_form(u[:, k], R)
-            if self.obstacles:
+            if len(obstacles) > 0:
                 # accumulate the displacement over the prediction horizon
                 p = p + dt * u[:2, k] # accumulate the displacement over the prediction horizon
                 if self.last_path is not None:
                     v += self.last_path[:2, k] * dt # estimate the displacement based on the last computed path
 
-                shifted_obstacles = obstacles - v # shift the obstacles by the estimated displacement
+                shifted_obstacles = obstacles[:,:2] + obstacles[:,2:]*(k+1)*dt - v # shift the obstacles by the estimated displacement
                 distances = np.linalg.norm(shifted_obstacles, axis=1)  # compute the distances to the shifted obstacles
                 directions = shifted_obstacles / distances[:, np.newaxis]  # compute the direction vectors to the shifted obstacles
                 for i in range(len(distances)):
-                    constraints += [directions[i] @ (obstacles[i] - p) >= margin]  # ensure the distance to each obstacle is greater than the safety margin
+                    constraints += [directions[i] @ (obstacles[i,:2] - p) >= margin]  # ensure the distance to each obstacle is greater than the safety margin
 
         objective = cp.Minimize(cost)
         problem = cp.Problem(objective, constraints)
