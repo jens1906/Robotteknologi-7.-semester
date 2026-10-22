@@ -20,6 +20,8 @@ To include:
   track id; key 'c': call it with -1 (person nearest the image centre). Show the service's message
   ("enrolling #7" / "nobody there") on screen for a few seconds.
 - Keys: m mode, c calibrate centre, r clear the leader, q quit.
+- Top-down map (showMap): where every person with a position stands, seen from the ceiling, up to
+  mapRangeMeters ahead.
 - Header line: perception state, shown fps, image age (now - stamp), how many images were dropped.
 - Warn on screen when no image or no perception result arrived for a while.
 - Drawing itself is in overlay.py.
@@ -46,6 +48,8 @@ EXACT_MODE = True
 IMAGE_BUFFER_SIZE = 30
 WINDOW_WIDTH = 960
 SHOW_DISTANCES = True
+SHOW_MAP = True
+MAP_RANGE_METERS = 5.0
 
 # Window
 WINDOW_NAME = 'perception'
@@ -73,10 +77,14 @@ class PerceptionViewer(Node):
         self.declare_parameter('imageBufferSize', IMAGE_BUFFER_SIZE)
         self.declare_parameter('windowWidth', WINDOW_WIDTH)
         self.declare_parameter('showDistances', SHOW_DISTANCES)
+        self.declare_parameter('showMap', SHOW_MAP)
+        self.declare_parameter('mapRangeMeters', MAP_RANGE_METERS)
         self.exactMode = self.get_parameter('exactMode').value
         self.imageBufferSize = self.get_parameter('imageBufferSize').value
         self.windowWidth = self.get_parameter('windowWidth').value
         self.showDistances = self.get_parameter('showDistances').value
+        self.showMap = self.get_parameter('showMap').value
+        self.mapRangeMeters = self.get_parameter('mapRangeMeters').value
 
         self.imageBuffer = deque(maxlen=self.imageBufferSize)
         self.latestTrackedPeople = None
@@ -175,6 +183,8 @@ class PerceptionViewer(Node):
         self.shownTrackedPeople = trackedPeopleMessage.people if trackedPeopleMessage is not None else []
         overlay.DrawTrackedPeople(image, self.shownTrackedPeople, self.showDistances)
         overlay.DrawLeaderBanner(image, self.latestLeaderState)
+        if self.showMap:
+            overlay.DrawTopDownMap(image, self.shownTrackedPeople, self.mapRangeMeters)
         nowSeconds = time.monotonic()
         self.UpdateShownFramesPerSecond(nowSeconds)
         modeName = 'exact' if self.exactMode else 'live'

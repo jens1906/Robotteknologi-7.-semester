@@ -1,7 +1,7 @@
 """Start perception: RealSense driver, the camera's mounting TF and the perception node.
 
     ros2 launch perception perception.launch.py
-    ros2 launch perception perception.launch.py startCamera:=false     # replaying a rosbag
+    ros2 launch perception perception.launch.py startCamera:=false     # replaying a rosbag (bag has no TF)
     ros2 launch perception perception.launch.py cameraX:=0.28 cameraZ:=0.10
 
 The Go2 lidar (/utlidar/cloud_base) and odometry (/utlidar/robot_odom) come from the robot itself;
@@ -13,7 +13,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -59,8 +59,16 @@ def generate_launch_description():
                    '--pitch', LaunchConfiguration('cameraPitch'), '--yaw', LaunchConfiguration('cameraYaw'),
                    '--frame-id', 'base_link', '--child-frame-id', 'camera_link'])
 
+    # camera_link -> camera_color_optical_frame (standard optical rotation: z forward, x right, y down).
+    # Live the RealSense driver publishes it; a replayed rosbag has no TF, so it is published here instead.
+    camera_optical = Node(
+        package='tf2_ros', executable='static_transform_publisher', name='camera_optical_tf',
+        arguments=['--roll', '-1.5708', '--yaw', '-1.5708',
+                   '--frame-id', 'camera_link', '--child-frame-id', 'camera_color_optical_frame'],
+        condition=UnlessCondition(LaunchConfiguration('startCamera')))
+
     perception = Node(
         package='perception', executable='perception_node', name='perception_node', output='screen',
         parameters=[LaunchConfiguration('paramsFile')])
 
-    return LaunchDescription([*args, realsense, camera_mount, perception])
+    return LaunchDescription([*args, realsense, camera_mount, camera_optical, perception])

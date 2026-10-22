@@ -7,6 +7,8 @@ To include:
 - Leader state banner: IDLE / ENROLLING (with "turn around slowly" and the views per direction) /
   FOLLOWING #id (with the stored views per group), and "NOT IN FRAME: last seen x s ago" (with the
   last position when there is one) while the leader is not identified in the image.
+- Top-down map in the bottom right corner (as seen from the ceiling): the robot at the bottom middle,
+  forward up, left left, a half ring every metre, every person with a valid position as a dot with its id.
 - Header line with mode (exact / live), fps and image age.
 - Click feedback: a ring where the user clicked and the calibration service's answer for a few seconds.
 - A person-under-the-mouse lookup (box containing the click point, the smallest if several overlap)
@@ -18,6 +20,7 @@ import colorsys
 import math
 
 import cv2
+import numpy as np
 
 # Colors (BGR)
 LEADER_COLOR = (0, 220, 0)
@@ -40,6 +43,16 @@ GOLDEN_RATIO = 0.61803398875
 HEADER_BOTTOM_PIXELS = 30
 BANNER_BOTTOM_PIXELS = 54
 CLICK_MARKER_RADIUS_PIXELS = 22
+
+# Top-down map
+MAP_SIZE_PIXELS = 200
+MAP_MARGIN_PIXELS = 10
+MAP_ROBOT_MARGIN_PIXELS = 12
+MAP_DOT_RADIUS_PIXELS = 6
+MAP_OPACITY = 0.85
+MAP_BACKGROUND_COLOR = (40, 40, 40)
+MAP_RING_COLOR = (110, 110, 110)
+MAP_ROBOT_COLOR = (255, 255, 255)
 
 
 def PickColorForTrackId(trackId):
@@ -69,6 +82,31 @@ def DrawTrackedPeople(image, trackedPeople, showDistances):
         if showDistances and trackedPerson.position_valid:
             labelText += f' {math.hypot(trackedPerson.position.x, trackedPerson.position.y):.1f}m'
         DrawLabel(image, labelText, left, top, boxColor)
+
+
+def DrawTopDownMap(image, trackedPeople, mapRangeMeters):
+    mapImage = np.full((MAP_SIZE_PIXELS, MAP_SIZE_PIXELS, 3), MAP_BACKGROUND_COLOR, np.uint8)
+    robotX = MAP_SIZE_PIXELS // 2
+    robotY = MAP_SIZE_PIXELS - MAP_ROBOT_MARGIN_PIXELS
+    pixelsPerMeter = (MAP_SIZE_PIXELS - MAP_ROBOT_MARGIN_PIXELS) / mapRangeMeters
+    for ringMeters in range(1, int(mapRangeMeters) + 1):
+        ringRadius = int(ringMeters * pixelsPerMeter)
+        cv2.ellipse(mapImage, (robotX, robotY), (ringRadius, ringRadius), 0, 180, 360, MAP_RING_COLOR, 1)
+        cv2.putText(mapImage, f'{ringMeters}', (robotX + 3, robotY - ringRadius + 12), FONT, 0.35, MAP_RING_COLOR, 1)
+    cv2.drawMarker(mapImage, (robotX, robotY), MAP_ROBOT_COLOR, cv2.MARKER_TRIANGLE_UP, 14, 2)
+    for trackedPerson in trackedPeople:
+        if not trackedPerson.position_valid:
+            continue
+        dotX = int(robotX - trackedPerson.position.y * pixelsPerMeter)
+        dotY = int(robotY - trackedPerson.position.x * pixelsPerMeter)
+        dotColor = LEADER_COLOR if trackedPerson.is_leader else PickColorForTrackId(trackedPerson.id)
+        cv2.circle(mapImage, (dotX, dotY), MAP_DOT_RADIUS_PIXELS, dotColor, -1)
+        cv2.putText(mapImage, f'{trackedPerson.id}', (dotX + 8, dotY + 4), FONT, 0.4, dotColor, 1)
+    imageHeight, imageWidth = image.shape[:2]
+    mapLeft = imageWidth - MAP_SIZE_PIXELS - MAP_MARGIN_PIXELS
+    mapTop = imageHeight - MAP_SIZE_PIXELS - MAP_MARGIN_PIXELS
+    mapArea = image[mapTop:mapTop + MAP_SIZE_PIXELS, mapLeft:mapLeft + MAP_SIZE_PIXELS]
+    mapArea[:] = cv2.addWeighted(mapImage, MAP_OPACITY, mapArea, 1.0 - MAP_OPACITY, 0)
 
 
 def DrawLeaderBanner(image, leaderState):
@@ -104,8 +142,8 @@ def DescribeFollowedLeader(leaderState):
 
 
 def DescribeStoredViews(leaderState):
-    return (f'front {leaderState.front_views} back {leaderState.back_views} left {leaderState.side_left_views} '
-            f'right {leaderState.side_right_views} hidden {leaderState.partly_hidden_views}')
+    return (f'f{leaderState.front_views} b{leaderState.back_views} l{leaderState.side_left_views} '
+            f'r{leaderState.side_right_views} h{leaderState.partly_hidden_views}')
 
 
 def DrawHeader(image, text):

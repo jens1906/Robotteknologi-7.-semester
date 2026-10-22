@@ -9,3 +9,5 @@ perception_viewer:
     imageBufferSize: 30       # images kept to find the one with the same timestamp as a result (~1 s at 30 fps)
     windowWidth: 960          # px
     showDistances: true       # reid distance and metres under each box
+    showMap: true             # top-down map in the bottom right corner (people placed by depth, seen from the ceiling)
+    mapRangeMeters: 5.0       # m ahead of the robot the map shows

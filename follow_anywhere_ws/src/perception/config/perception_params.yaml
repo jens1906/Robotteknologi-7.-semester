@@ -57,6 +57,9 @@ perception_node:
     # --- 3D position + Kalman filter ------------------------------------------------------------
     depthMin: 0.3                            # m, depth outside this range is not used
     depthMax: 8.0
+    depthPatchPixels: 3                      # GUESS: px around each torso keypoint whose depth is used (3 = 7x7 patch)
+    minimumDepthSamples: 5                   # GUESS: valid depth pixels needed, else the middle strip of the box, else no position
+    minimumValidDepthShare: 0.3              # GUESS: share of the sampled pixels with usable depth, below = no position (person closer than depthMin)
     kalmanProcessNoise: 1.0                  # placeholder, tune: how fast velocities may change (m/s^2)
     kalmanMeasurementNoise: 0.1              # placeholder, tune: position noise of one measurement (m)
     trackTimeout: 1.0                        # s without measurement before a filter is dropped
