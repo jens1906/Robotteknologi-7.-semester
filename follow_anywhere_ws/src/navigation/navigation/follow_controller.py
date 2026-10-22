@@ -36,6 +36,7 @@ class FollowLeader(Node):
         self.leader_id = None
         self.last_seen = None
         self.leader = None
+        self.last_path = None
         self.moving = False
         self.speed = [0.0,0.0,0.0]
 
@@ -102,40 +103,58 @@ class FollowLeader(Node):
 
         dt = self.dt          # your control period
         margin = 1.5  # safety margin for obstacles
+        N = 10  # prediction horizon
 
-        A = np.asarray(self.A())
+        #A = np.asarray(self.A())
         B = np.asarray(self.B())
 
         Q = np.diag([10.0, 1.0])
         R = np.diag([5.0, 0.5, 0.5])
 
-        u = cp.Variable(3)
+        u = cp.Variable((3, N))
+        x = cp.Variable((2, N + 1))
+        constraints = []
 
         # current state and reference
-        x0 = np.array([self.leader.range - 2.0, self.leader.bearing])
+        constraints += [x[:, 0] == np.array([self.leader.range - 2.0, self.leader.bearing])]
+        cost = 0
 
-        # prediction
-        x_next = x0 + dt * (B @ u)
+        # accumulate the displacement over the prediction horizon
+        v = np.zeros(2)
+        p = 0
 
-        # obstacles: position after one step must stay on the free side
-        C = []
-        if self.obstacles:
-            obs = np.asarray(self.obstacles)            # (N, 2): [d, theta]
-            a = np.column_stack([np.cos(obs[:, 1]), np.sin(obs[:, 1])])
-            b = obs[:, 0] - margin
-            C = [a @ (u[:2] * dt) <= b]
+        # convert obs to Cartesian coordinates
+        obstacles = np.asarray([[r * math.cos(b), r * math.sin(b)] for r, b in self.obstacles])
 
-        objective = cp.Minimize(cp.quad_form(x_next, Q) + cp.quad_form(u, R))
-        problem = cp.Problem(objective, C)
+        for k in range(N):
+            constraints += [x[:, k + 1] == x[:, k] + dt * (B @ u[:, k])]
+            cost += cp.quad_form(x[:, k + 1], Q) + cp.quad_form(u[:, k], R)
+            if self.obstacles:
+                # accumulate the displacement over the prediction horizon
+                p = p + dt * u[:2, k] # accumulate the displacement over the prediction horizon
+                if self.last_path is not None:
+                    v += self.last_path[:2, k] * dt # estimate the displacement based on the last computed path
+
+                shifted_obstacles = obstacles - v # shift the obstacles by the estimated displacement
+                distances = np.linalg.norm(shifted_obstacles, axis=1)  # compute the distances to the shifted obstacles
+                directions = shifted_obstacles / distances[:, np.newaxis]  # compute the direction vectors to the shifted obstacles
+                for i in range(len(distances)):
+                    constraints += [directions[i] @ (obstacles[i] - p) >= margin]  # ensure the distance to each obstacle is greater than the safety margin
+
+        objective = cp.Minimize(cost)
+        problem = cp.Problem(objective, constraints)
         problem.solve()
 
         cmd = Command()
 
+
         if problem.status in ("optimal", "optimal_inaccurate"):
-            vx, vy, w = u.value
-            cmd.vx = clamp(vx, 1.5)
-            cmd.vy = clamp(vy, 1.5)
-            cmd.wz = clamp(w, 2.0)
+            self.last_path = u.value  # store the last computed path for future use
+            cmd.vx = clamp(u.value[0, 0], 1.0)
+            cmd.vy = clamp(u.value[1, 0], 1.0)
+            cmd.wz = clamp(u.value[2, 0], 1.0)
+        else:
+            self.last_path = None  # reset the last path if the problem is infeasible
         return cmd
 
 
