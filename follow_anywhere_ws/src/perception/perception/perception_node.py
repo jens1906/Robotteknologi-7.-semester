@@ -44,6 +44,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+from perception.body_view import BACK_GROUP, FRONT_GROUP, PARTLY_HIDDEN_GROUP, SIDE_LEFT_GROUP, SIDE_RIGHT_GROUP
 from perception.leader_manager import (ENROLL_FAILED_EVENT, ENROLLED_EVENT, LEADER_SETTING_DEFAULTS, NO_EVENT,
                                        NO_TRACK_ID, LeaderManager)
 from perception.person_detector import PersonDetector
@@ -118,6 +119,8 @@ class PerceptionNode(Node):
         self.leaderManager = LeaderManager(leaderSettings)
         if self.leaderManager.LoadLeader(self.leaderFilePath, self.reidModelFile):
             self.get_logger().info('LeaderManager: saved leader loaded, searching for them')
+        elif os.path.exists(self.leaderFilePath):
+            self.PublishDebugMessage('LeaderManager', 'saved leader is from an older version or another model, calibrate again')
 
         # Input topics
         newestImageQos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT, depth=1)
@@ -173,7 +176,7 @@ class PerceptionNode(Node):
         try:
             return self.leaderManager.Update(
                 detectedPeople, lambda trackIds: self.EmbedTrackedPeople(imageBgr, detectedPeople, trackIds),
-                imageSeconds)
+                imageSeconds, imageBgr.shape[1])
         except Exception as error:
             self.PublishDebugMessage('LeaderManager', f'update failed: {error}')
             return NO_EVENT
@@ -228,6 +231,12 @@ class PerceptionNode(Node):
             point.x = point.y = point.z = math.nan
         leaderStateMessage.velocity_valid = False
         leaderStateMessage.velocity_compensated = False
+        storedViewCounts = self.leaderManager.CountStoredViews()
+        leaderStateMessage.front_views = storedViewCounts[FRONT_GROUP]
+        leaderStateMessage.back_views = storedViewCounts[BACK_GROUP]
+        leaderStateMessage.side_left_views = storedViewCounts[SIDE_LEFT_GROUP]
+        leaderStateMessage.side_right_views = storedViewCounts[SIDE_RIGHT_GROUP]
+        leaderStateMessage.partly_hidden_views = storedViewCounts[PARTLY_HIDDEN_GROUP]
         return leaderStateMessage
 
     def CalculateSecondsSinceSeen(self, imageSeconds):

@@ -26,3 +26,10 @@ bool velocity_compensated             # true: the robot's own motion is removed 
 
 # where the leader was when last identified (NaN until depth is used)
 geometry_msgs/Point last_seen_position
+
+# stored views of the leader per group (calibration + learned)
+uint8 front_views
+uint8 back_views
+uint8 side_left_views
+uint8 side_right_views
+uint8 partly_hidden_views

@@ -4,7 +4,8 @@ To include:
 - Boxes of all tracked people with their tracker id; the leader in green, others in grey.
 - Under each box (show_distances): reid distance to the leader (if compared this frame) and the
   distance in metres (from the person's position, when position_valid).
-- Leader state banner: IDLE / ENROLLING / FOLLOWING #id, and "NOT IN FRAME: last seen x s ago" (with the
+- Leader state banner: IDLE / ENROLLING (with "turn around slowly" and the views per direction) /
+  FOLLOWING #id (with the stored views per group), and "NOT IN FRAME: last seen x s ago" (with the
   last position when there is one) while the leader is not identified in the image.
 - Header line with mode (exact / live), fps and image age.
 - Click feedback: a ring where the user clicked and the calibration service's answer for a few seconds.
@@ -28,6 +29,7 @@ STATE_COLORS = ((255, 255, 255), (0, 220, 255), (0, 220, 0), (0, 165, 255), (60,
 
 # Leader states (PerceptionLeaderState)
 STATE_NAMES = ('IDLE', 'ENROLLING', 'FOLLOWING', 'SEARCHING', 'LOST')
+ENROLLING_STATE = 1
 FOLLOWING_STATE = 2
 SEARCHING_STATE = 3
 LOST_STATE = 4
@@ -76,6 +78,9 @@ def DrawLeaderBanner(image, leaderState):
         bannerText, bannerColor = DescribeLeaderOutOfFrame(leaderState), NOTICE_COLOR
     elif leaderState.state == FOLLOWING_STATE:
         bannerText, bannerColor = DescribeFollowedLeader(leaderState), LEADER_COLOR
+    elif leaderState.state == ENROLLING_STATE:
+        bannerText = f'LEADER: ENROLLING, turn around slowly  {DescribeStoredViews(leaderState)}'
+        bannerColor = STATE_COLORS[ENROLLING_STATE]
     else:
         bannerText, bannerColor = f'LEADER: {STATE_NAMES[leaderState.state]}', STATE_COLORS[leaderState.state]
     DrawLabel(image, bannerText, 0, BANNER_BOTTOM_PIXELS, bannerColor, 0.6)
@@ -95,7 +100,12 @@ def DescribeFollowedLeader(leaderState):
     description = f'LEADER: FOLLOWING #{leaderState.track_id}'
     if not math.isnan(leaderState.distance):
         description += f'  {leaderState.distance:.1f} m'
-    return description
+    return f'{description}  views {DescribeStoredViews(leaderState)}'
+
+
+def DescribeStoredViews(leaderState):
+    return (f'front {leaderState.front_views} back {leaderState.back_views} left {leaderState.side_left_views} '
+            f'right {leaderState.side_right_views} hidden {leaderState.partly_hidden_views}')
 
 
 def DrawHeader(image, text):

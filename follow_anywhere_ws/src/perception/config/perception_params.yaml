@@ -32,14 +32,21 @@ perception_node:
     verifyPeriod: 0.2                        # s between OSNet checks of the followed person; was 1.0, 0 = every frame. ~14 ms per check on CPU
     searchPeriod: 0.3                        # GUESS: s between searches
     searchCandidates: 4                      # GUESS: people compared per search
-    enrollViews: 8                           # GUESS: views stored when enrolling (the permanent anchors)
+    averageViews: 5                          # GUESS: a candidate's last views averaged before comparing (one photo is noisy)
+    enrollViewsPerDirection: 3               # GUESS: calibration views per facing direction (front, back, side left, side right), the permanent anchors
+    enrollMinimumDirections: 1               # GUESS: directions that must be filled to finish after enrollDuration (1 = a calibration without turning still works)
     enrollGap: 0.4                           # GUESS: s between two stored views, so they differ a little
+    enrollDuration: 8.0                      # GUESS: s the leader has to turn around; enrolment ends earlier when all four directions are filled
     enrollTimeout: 20.0                      # GUESS: s before an unfinished enrolment is given up
     enrollGraceTime: 2.0                     # CHOSEN: s the person being enrolled may be missing (the tracker drops boxes for a few frames now and then)
     enrollRebindIou: 0.6                     # GUESS: a new track this much on the enrolled person's last box is the same person (track id change)
-    rollingViews: 20                         # GUESS: views learned while following, oldest go first
-    learnDistance: 0.65                      # GUESS: a followed view up to this far from the stored ones is learned (wider than reidAccept, so a turned/relit leader is found again); lower = safer against learning a wrong person
-    noveltyDistance: 0.25                    # GUESS: a view closer than this to a stored one is not stored again
+    viewsPerGroup: 6                         # GUESS: stored views per group (front, back, side left, side right, partly hidden), calibration + learned
+    noveltyDistance: 0.25                    # GUESS: a view closer than this to a stored one of its group is not stored again
+    trustTime: 3.0                           # GUESS: s after a strong match (below reidAccept) on the same unbroken track in which views are learned
+    keypointConfidence: 0.5                  # GUESS: keypoint confidence above which a body point counts as visible
+    sideRatio: 0.35                          # GUESS: shoulder width below this share of the torso height = seen from the side
+    edgeMarginPixels: 8                      # GUESS: px, a box this close to the left/right image edge is cut off: not compared, not learned
+    minimumCropHeightPixels: 96              # GUESS: px, smaller people are not compared or learned (OSNet input is 256 px high)
     graceTime: 1.0                           # CHOSEN: s the followed person may be missing (flicker) before searching
     lostTime: 10.0                           # NEW, untested: s of searching before the state becomes LOST
     crossingIou: 0.15                        # GUESS: another person's box this much over the leader's: OSNet cannot tell them apart, the lock is dropped
