@@ -37,6 +37,11 @@ RUN
   SIM2D_VIEWER=false docker compose up    no window
   SIM2D_NOISE=0 docker compose up         perception reports exact ground truth
 
+  Host nodes talk to the container over UDP: docker-compose.yml turns off
+  Fast DDS shared memory (FASTDDS_BUILTIN_TRANSPORTS=UDPv4), which the root
+  container and a host user can't share. Symptom without it: the host lists
+  the topics but receives no messages.
+
   Inside the container:
     ros2 launch go2_sim2d sim2d.launch.py world:=office viewer:=true \
         noise_scale:=1.0 odom_drift:=0.0 perception:=/path/to/params.yaml

@@ -10,6 +10,9 @@ services:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
       - ROS_DOMAIN_ID=0
+      # Fast DDS shared memory fails between the root container and host users
+      # (segments in /dev/shm are root 0644): discovery works but no data arrives.
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       # Scene (go2_scenarios/scenes): empty, open_field, office, plaza,
       # warehouse. E.g. GO2_WORLD=plaza docker compose up
       - GO2_WORLD=${GO2_WORLD:-open_field}

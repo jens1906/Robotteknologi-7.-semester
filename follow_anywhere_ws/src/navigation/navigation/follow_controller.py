@@ -25,10 +25,6 @@ class Command:
         return self.vx == 0.0 and self.vy == 0.0 and self.wz == 0.0
 
 
-def clamp(v: float, limit: float) -> float:
-    return max(-limit, min(limit, v))
-
-
 class FollowLeader(Node):
     def __init__(self):
         super().__init__('follow_leader')
@@ -49,6 +45,7 @@ class FollowLeader(Node):
         self.create_timer(self.dt, self.tick)
 
     def on_detections(self, msg: DetectionArray) -> None:
+        self.get_logger().info(f"Received detections: {len(msg.detections)}")
         now = time.monotonic()
         
         obstacles = []
@@ -107,13 +104,13 @@ class FollowLeader(Node):
 
         dt = self.dt          # your control period
         margin = 1.5  # safety margin for obstacles
-        N = 10  # prediction horizon
+        N = 5  # prediction horizon
 
         #A = np.asarray(self.A())
         B = np.asarray(self.B())
 
         Q = np.diag([10.0, 1.0])
-        R = np.diag([5.0, 0.5, 0.5])
+        R = np.diag([5.0, 5.0, 0.5])
 
         u = cp.Variable((3, N))
         x = cp.Variable((2, N + 1))
@@ -139,8 +136,16 @@ class FollowLeader(Node):
             leader_speed = np.zeros(2)
 
 
+
         for k in range(N):
+<<<<<<< HEAD
             constraints += [x[:, k + 1] == x[:, k] + dt * (B @ u[:, k]) + dt * leader_speed]
+=======
+            constraints += [x[:, k + 1] == x[:, k] + dt * (B @ u[:, k])]
+            for i in range(3):
+                constraints += [u[i, k] <= 1.0]
+                constraints += [u[i, k] >= -1.0]
+>>>>>>> 123f0bd85c53d75a09d9ef753548961bbd5a31c8
             cost += cp.quad_form(x[:, k + 1], Q) + cp.quad_form(u[:, k], R)
             if len(obstacles) > 0:
                 # accumulate the displacement over the prediction horizon
@@ -163,9 +168,10 @@ class FollowLeader(Node):
 
         if problem.status in ("optimal", "optimal_inaccurate"):
             self.last_path = u.value  # store the last computed path for future use
-            cmd.vx = clamp(u.value[0, 0], 1.0)
-            cmd.vy = clamp(u.value[1, 0], 1.0)
-            cmd.wz = clamp(u.value[2, 0], 1.0)
+            cmd.vx = u.value[0, 0]
+            cmd.vy = u.value[1, 0]
+            cmd.wz = u.value[2, 0]
+            self.speed = [cmd.vx, cmd.vy, cmd.wz]
         else:
             self.last_path = None  # reset the last path if the problem is infeasible
         return cmd
