@@ -35,6 +35,7 @@ class FollowLeader(Node):
         self.last_path = None
         self.moving = False
         self.speed = [0.0,0.0,0.0]
+        self.last_time = 0
 
         self.obstacles = []
 
@@ -103,21 +104,21 @@ class FollowLeader(Node):
             return Command()
 
         dt = self.dt          # your control period
-        margin = 1.5  # safety margin for obstacles
-        N = 5  # prediction horizon
+        margin = 1.0  # safety margin for obstacles
+        N = 7  # prediction horizon
 
         #A = np.asarray(self.A())
         B = np.asarray(self.B())
 
-        Q = np.diag([10.0, 1.0])
-        R = np.diag([5.0, 5.0, 0.5])
+        Q = np.diag([8.0, 0.5])
+        R = np.diag([7.5, 7.5, 0.5])
 
         u = cp.Variable((3, N))
-        x = cp.Variable((2, N + 1))
+        x = cp.Variable((3, N + 1))
         constraints = []
 
         # current state and reference
-        constraints += [x[:, 0] == np.array([self.leader.range - 2.0, self.leader.bearing])]
+        constraints += [x[:, 0] == np.array([0.0, 0.0, 0.0])]  # initial state is at the origin
         cost = 0
 
         # accumulate the displacement over the prediction horizon
@@ -132,26 +133,21 @@ class FollowLeader(Node):
         if len(obstacles) > 0:
             obstacle_speed = np.linalg.norm(obstacles[:, 2:], axis=1)  # compute the speed of each obstacle
             obstacles[obstacle_speed < obstacle_std * 2, 2: ] = 0 # set the velocity to zero for obstacles with low speed relative to their uncertainty
-        leader_speed = np.array([self.leader.velocity.x, self.leader.velocity.y])
-        sinb = math.sin(self.leader.bearing)
-        cosb = math.cos(self.leader.bearing)
-        leader_change = np.array([
-                leader_speed[0] * dt * cosb + leader_speed[1] * dt * sinb,
-                (-leader_speed[0] * dt * sinb + leader_speed[1] * dt * cosb)/self.leader.range
-                ])
-        if np.linalg.norm(leader_speed) < self.leader.velocity_std * 2:
-            leader_speed = np.zeros(2)
-
-
+        leader = np.array([self.leader.range * math.cos(self.leader.bearing), self.leader.range * math.sin(self.leader.bearing), self.leader.velocity.x, self.leader.velocity.y])
+        leader_std = np.array([self.leader.velocity_std])
+        leader_speed = np.linalg.norm(leader[2:])  # compute the speed of the leader
+        if leader_speed < leader_std * 2:
+            leader[2:] = 0  # set the velocity to zero for the leader if its speed is low relative to its uncertainty
 
 
         for k in range(N):
-            constraints += [x[:, k + 1] == x[:, k] + dt * (B @ u[:, k]) + leader_change]
+            constraints += [x[:, k + 1] == x[:, k] + dt * (B @ u[:, k])]
 
             for (i, max_vel) in enumerate([1.0, 1.0, 1.0]):
                 constraints += [u[i, k] <=  max_vel]
                 constraints += [u[i, k] >= -max_vel]
 
+            error = x[:, k + 1] - np.array([leader[0], leader[1], 0.0])  # desired state is the leader's position with zero orientation
             cost += cp.quad_form(x[:, k + 1], Q) + cp.quad_form(u[:, k], R)
             if len(obstacles) > 0:
                 cos_t = math.cos(t)
