@@ -36,21 +36,10 @@ else()
   set(OSQP_TARGET osqp::osqp)
 endif()
 
-# The MPC itself, without ROS, so it can be tested on its own.
-add_library(follow_mpc STATIC src/mpc.cpp)
-target_include_directories(follow_mpc PUBLIC src)
-target_link_libraries(follow_mpc PUBLIC Eigen3::Eigen ${OSQP_TARGET})
-
-add_executable(follow_leader_cpp src/follow_controller.cpp)
-target_link_libraries(follow_leader_cpp follow_mpc rclcpp::rclcpp
+add_executable(follow_leader_cpp src/main.cpp)
+target_link_libraries(follow_leader_cpp Eigen3::Eigen ${OSQP_TARGET} rclcpp::rclcpp
   ${perception_msgs_TARGETS} ${unitree_api_TARGETS})
 
 install(TARGETS follow_leader_cpp DESTINATION lib/${PROJECT_NAME})
-
-if(BUILD_TESTING)
-  find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(test_follow_controller test/test_follow_controller.cpp)
-  target_link_libraries(test_follow_controller follow_mpc)
-endif()
 
 ament_package()
