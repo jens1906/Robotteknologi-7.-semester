@@ -1,0 +1,35 @@
+# Fake perception (go2_sim2d/perception.py, Params). Write floats with a
+# decimal point: ROS parameters are typed, and 360 is not a double.
+# For every node (/**): the viewer draws the sensor fields from it too.
+/**:
+  ros__parameters:
+    rate: 15.0                  # Hz, /perception/detections
+    scan_rate: 15.0             # Hz, /perception/scan
+    seed: -1                    # >= 0 for repeatable noise
+
+    # Lidar field (Unitree L1): all around, geometry only.
+    lidar_fov_deg: 360.0
+    lidar_range_min: 0.1
+    lidar_range_max: 15.0
+    lidar_range_std: [0.02, 0.01]   # m, std = a + b * range
+    lidar_bearing_std_deg: 1.0
+
+    # Camera field (head camera): in front, classifies people and the leader.
+    camera_fov_deg: 90.0
+    camera_range_min: 0.3
+    camera_range_max: 8.0
+    camera_range_std: [0.05, 0.05]  # used when the lidar does not see the object
+    camera_bearing_std_deg: 0.5
+    camera_confidence: 0.9
+
+    # Movement estimate: noisy ground velocity, filtered.
+    velocity_std: [0.05, 0.05]  # m/s, std = a + b * speed, per axis
+    velocity_alpha: 0.5         # weight of each new measurement (1 = unfiltered)
+    moving_threshold: 0.1       # m/s
+
+    radius_std: 0.05            # m
+    dropout_prob: 0.03          # chance an object is missing from a frame
+    leader_confusion_prob: 0.0  # chance the leader is reported as a plain person
+    occlusion: true             # objects hide what is behind them
+    noise_scale: 1.0            # scales all noise; 0 = exact ground truth
+    scan_rays: 720

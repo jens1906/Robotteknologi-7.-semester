@@ -15,8 +15,8 @@ setup(
     zip_safe=True,
     maintainer='jens',
     maintainer_email='jens1906@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Leader following from the perception stack (detections + lidar scan)',
+    license='BSD-3-Clause',
     extras_require={
         'test': [
             'pytest',
@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'follow_leader = navigation.follow_controller:main',
         ],
     },
 )

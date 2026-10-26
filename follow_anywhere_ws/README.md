@@ -8,6 +8,7 @@ ROS2 (Lyrical) workspace for the follow-anywhere project on the physical Unitree
 | `unitree_go` | Go2 state/command messages (`/sportmodestate`, `/lowstate`, ...). Backbone. |
 | `manual_controller` | WASD/arrow-key manual control. |
 | `navigation`, `vision` | Placeholders. Add `<depend>unitree_go</depend>` to use the Go2 messages. |
+| `perception_msgs` | `Detection` / `DetectionArray`: the leader, people and obstacles in polar coordinates around `base_link`, with class, stds and estimated velocity. Output of `vision`, input of `navigation`. `2dSim`'s `fake_perception` publishes it on `/perception/detections`. |
 | `go2_verify` | Live dashboard to check the Go2 works: head camera, RealSense colour/depth, lidar point cloud, state charts and per-topic rates. See [Verify](#verify). |
 | `go2_bringup` | TF for the Go2 (the robot publishes none): sensor mounts from `config/go2_mounts.yaml` and `odom -> base_link` from `/utlidar/robot_odom`. `ros2 launch go2_bringup go2_tf.launch.py`. Same on the real robot and the sim. |
 
