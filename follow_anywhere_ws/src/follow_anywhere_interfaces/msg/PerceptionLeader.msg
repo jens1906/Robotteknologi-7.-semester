@@ -8,8 +8,8 @@ uint8 LOST = 2                             # known, but not identified in this i
 std_msgs/Header header
 uint8 status
 geometry_msgs/Point closest_point          # nearest point of the leader to the robot, this frame; NaN when not VISIBLE or no depth this frame
-geometry_msgs/Vector3 velocity             # 0 when standing still; while LOST the last velocity
-float32 position_uncertainty               # m, 1 sigma; grows with velocity_uncertainty * age while only last_known_point is known
+geometry_msgs/Vector3 velocity             # over the ground (the robot's own motion removed); 0 when standing still; while LOST the velocity of the last sighting
+float32 position_uncertainty               # m, 1 sigma; while LOST it grows, and is the uncertainty around last_known_point + velocity * lost_duration
 float32 velocity_uncertainty               # m/s, 1 sigma
 float32 lost_duration                      # s since last identified, 0 while VISIBLE, NaN if never seen since start
-geometry_msgs/Point last_known_point       # last valid closest_point (also the end of the line of sight while LOST); NaN if never seen
+geometry_msgs/Point last_known_point       # last valid closest_point, kept in place on the floor while the robot moves (also the end of the line of sight while LOST); NaN if never seen

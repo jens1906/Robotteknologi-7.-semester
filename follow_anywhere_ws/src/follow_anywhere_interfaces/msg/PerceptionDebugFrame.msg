@@ -10,6 +10,10 @@ uint8 LOST = 4                             # not identified for longer than lost
 
 std_msgs/Header header
 
+# robot odometry (/utlidar/robot_odom)
+float32 odometry_age                       # s since the newest odometry, NaN = none received (robot counted as standing still)
+float32 clock_offset                       # s added to the Go2's odometry stamps to put them on this computer's clock
+
 # leader logic
 uint8 leader_state
 int32 leader_track_id                      # tracker id of the leader in this frame, -1 = not identified

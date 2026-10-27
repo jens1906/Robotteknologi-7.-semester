@@ -8,7 +8,8 @@ To include:
   FOLLOWING #id (with the stored views per group), and "NOT IN FRAME: last seen x s ago" (with the
   last position when there is one) while the leader is not identified in the image.
 - Top-down map in the bottom right corner (as seen from the ceiling): the robot at the bottom middle,
-  forward up, left left, a half ring every metre, every person with a valid position as a dot with its id.
+  forward up, left left, a half ring every metre, every person with a valid position as a dot with its id and an
+  arrow to where they will be in MAP_ARROW_SECONDS at their velocity (no arrow when standing still).
 - Header line with mode (exact / live), fps and image age.
 - Click feedback: a ring where the user clicked and the calibration service's answer for a few seconds.
 - A person-under-the-mouse lookup (box containing the click point, the smallest if several overlap)
@@ -50,6 +51,7 @@ MAP_SIZE_PIXELS = 200
 MAP_MARGIN_PIXELS = 10
 MAP_ROBOT_MARGIN_PIXELS = 12
 MAP_DOT_RADIUS_PIXELS = 6
+MAP_ARROW_SECONDS = 1.0
 MAP_OPACITY = 0.85
 MAP_BACKGROUND_COLOR = (40, 40, 40)
 MAP_RING_COLOR = (110, 110, 110)
@@ -102,6 +104,10 @@ def DrawTopDownMap(image, trackedPeople, mapRangeMeters):
         dotY = int(robotY - trackedPerson.position.x * pixelsPerMeter)
         dotColor = LEADER_COLOR if trackedPerson.is_leader else PickColorForTrackId(trackedPerson.id)
         cv2.circle(mapImage, (dotX, dotY), MAP_DOT_RADIUS_PIXELS, dotColor, -1)
+        if trackedPerson.velocity.x != 0.0 or trackedPerson.velocity.y != 0.0:
+            arrowX = int(dotX - trackedPerson.velocity.y * MAP_ARROW_SECONDS * pixelsPerMeter)
+            arrowY = int(dotY - trackedPerson.velocity.x * MAP_ARROW_SECONDS * pixelsPerMeter)
+            cv2.arrowedLine(mapImage, (dotX, dotY), (arrowX, arrowY), dotColor, 2, tipLength=0.3)
         cv2.putText(mapImage, f'{trackedPerson.id}', (dotX + 8, dotY + 4), FONT, 0.4, dotColor, 1)
     imageHeight, imageWidth = image.shape[:2]
     mapLeft = imageWidth - MAP_SIZE_PIXELS - MAP_MARGIN_PIXELS

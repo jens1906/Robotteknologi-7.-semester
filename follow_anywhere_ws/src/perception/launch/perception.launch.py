@@ -3,6 +3,7 @@
     ros2 launch perception perception.launch.py
     ros2 launch perception perception.launch.py startCamera:=false     # replaying a rosbag (bag has no TF)
     ros2 launch perception perception.launch.py cameraX:=0.28 cameraZ:=0.10
+    ros2 launch perception perception.launch.py startCamera:=false useSimTime:=true   # bag played with --clock
 
 The Go2 lidar (/utlidar/cloud_base) and odometry (/utlidar/robot_odom) come from the robot itself;
 nothing is started for them here. Topic names are written in perception_node.py: remap them in this file if the
@@ -31,6 +32,8 @@ def generate_launch_description():
                               description='perception node parameters'),
         DeclareLaunchArgument('startCamera', default_value='true',
                               description='start the RealSense driver (false when replaying a rosbag)'),
+        DeclareLaunchArgument('useSimTime', default_value='false',
+                              description='use the /clock of a rosbag played with --clock (needed with odometry in the bag)'),
         *[DeclareLaunchArgument(name, default_value=value,
                                 description='camera mounting on base_link (m / rad), measure on the robot')
           for name, value in CAMERA_MOUNT.items()],
@@ -69,6 +72,6 @@ def generate_launch_description():
 
     perception = Node(
         package='perception', executable='perception_node', name='perception_node', output='screen',
-        parameters=[LaunchConfiguration('paramsFile')])
+        parameters=[LaunchConfiguration('paramsFile'), {'use_sim_time': LaunchConfiguration('useSimTime')}])
 
     return LaunchDescription([*args, realsense, camera_mount, camera_optical, perception])

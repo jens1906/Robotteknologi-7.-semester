@@ -15,7 +15,7 @@ find_package(unitree_api REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 # OSQP: use an installed one if there is one, otherwise build v1.0.0 statically.
-find_package(osqp QUIET)
+find_package(osqp 1.0 QUIET)
 if(NOT osqp_FOUND)
   include(FetchContent)
   set(OSQP_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)

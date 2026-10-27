@@ -16,8 +16,17 @@ To include:
   2. leader: re-identification for leader_manager (enrol / verify / search), using the newest people;
      its result is merged into the next published leader.
   (For now the leader update runs inline in the frame callback; the second thread comes when it is needed.)
-- Inputs: colour image, aligned depth image (paired with the colour image by stamp), camera_info, and the TF
-  base_link <- camera_color_optical_frame (camera mounting from the launch file + the RealSense driver).
+  Odometry is newest-only (queue 1), like the images: with a deeper queue it fell ~0.35 s behind the ~0.1 s frames
+  (one message per subscription per executor cycle). Its subscription is created first, so each cycle reads the
+  newest odometry before the frame that uses it. A second executor thread is not used: under sim time it starved
+  rclpy's /clock subscription (same callback group as the frames) and the clock stood still.
+- Inputs: colour image, aligned depth image (paired with the colour image by stamp), camera_info, the TF
+  base_link <- camera_color_optical_frame (camera mounting from the launch file + the RealSense driver), and the
+  Go2's odometry /utlidar/robot_odom (odom -> base_link). The odometry is stamped by the Go2's own clock: the stamps
+  are moved onto this computer's clock (ClockOffsetEstimator) and stored in this node's tf2 buffer (nothing is
+  published on /tf), which gives the robot's pose at each image's time.
+- No odometry yet: the robot counts as standing still. Odometry silent for odometryTimeout: one debug line, the
+  robot's pose uncertainty grows (velocity_tracker). Odometry starting or coming back: velocity filters restart.
 - Publish (all stamped with the camera image's time, frame base_link):
   Output: /perception/leader (status, closest point, velocity, uncertainties, lost duration, last known point),
   /perception/obstacles (every other tracked person: closest point to the robot and to the line of sight,
@@ -32,7 +41,10 @@ To include:
 - The leader is always loaded at start (~/.ros/follow_anywhere/perception_leader.npz).
 - Headless: no window here. The viewer runs in perception_interface on a laptop and reads the
   compressed image the RealSense driver publishes (raw images never leave the robot).
-- Velocity: 0 with velocity_uncertainty = UNKNOWN_VELOCITY_UNCERTAINTY until the velocity tracker exists.
+- Velocity and uncertainties: velocity_tracker (Kalman filter per person and one for the leader, in the odom frame,
+  so velocities are over the ground), turned into base_link at the image's time before publishing. The published
+  points come from the filtered centre; the leader's last known point is kept in odom so it stays in place while
+  the robot moves.
 """
 
 import math
@@ -46,8 +58,9 @@ from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from follow_anywhere_interfaces.msg import (PerceptionDebugFrame, PerceptionDebugPerson, PerceptionLeader,
                                             PerceptionObstacle, PerceptionObstacleArray)
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, TransformStamped, Vector3
 from follow_anywhere_interfaces.srv import PerceptionCalibrateLeader
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from rclpy.time import Time
@@ -60,10 +73,13 @@ from perception.coordinate_conversion import (COORDINATE_SETTING_DEFAULTS, Build
                                               CalculateHorizontalDistance, ConvertDepthImage, PlacePerson)
 from perception.leader_manager import (ENROLL_FAILED_EVENT, ENROLLED_EVENT, ENROLLING_STATE, IDLE_STATE,
                                        LEADER_SETTING_DEFAULTS, NO_EVENT, NO_TRACK_ID, LeaderManager)
-from perception.obstacle_mapper import (OBSTACLE_SETTING_DEFAULTS, BuildPersonCircle, EstimatePositionUncertainty,
-                                        FindClosestPointToLine, FindClosestPointToRobot, MakeUnknownPoint)
+from perception.obstacle_mapper import (OBSTACLE_SETTING_DEFAULTS, BuildPersonCircle, FindClosestPointToLine,
+                                        FindClosestPointToRobot, MakeFloorPoint, MakeUnknownPoint, PersonCircle)
 from perception.person_detector import PersonDetector
 from perception.reid_model import ReidModel
+from perception.velocity_tracker import (VELOCITY_SETTING_DEFAULTS, BuildMeasurement, ClockOffsetEstimator,
+                                         ConvertEstimateToBase, ConvertPointToBase, ConvertPointToOdom, MakeRobotPose,
+                                         MakeStillRobotPose, VelocityTracker)
 
 # Parameter defaults (set in config/perception_params.yaml, the leader settings have their defaults in leader_manager.py)
 DETECTOR_MODEL_FILE = 'yolov8n-pose.pt'
@@ -84,8 +100,9 @@ BASE_FRAME = 'base_link'
 DEPTH_BUFFER_SIZE = 10
 DEPTH_MATCH_TOLERANCE_SECONDS = 0.05
 
-# Velocity until the velocity tracker exists: unknown, so a walking speed as uncertainty (m/s)
-UNKNOWN_VELOCITY_UNCERTAINTY = 1.5
+# Robot odometry
+ODOMETRY_FRAME = 'odom'
+ODOMETRY_AUTHORITY = 'robot_odom'
 
 
 class PerceptionNode(Node):
@@ -100,7 +117,8 @@ class PerceptionNode(Node):
         self.declare_parameter('reidModelFile', REID_MODEL_FILE)
         self.declare_parameter('reidThreads', REID_THREADS)
         self.declare_parameter('leaderFile', LEADER_FILE)
-        allSettingDefaults = {**LEADER_SETTING_DEFAULTS, **COORDINATE_SETTING_DEFAULTS, **OBSTACLE_SETTING_DEFAULTS}
+        allSettingDefaults = {**LEADER_SETTING_DEFAULTS, **COORDINATE_SETTING_DEFAULTS, **OBSTACLE_SETTING_DEFAULTS,
+                              **VELOCITY_SETTING_DEFAULTS}
         for settingName, defaultValue in allSettingDefaults.items():
             self.declare_parameter(settingName, defaultValue)
         self.detectorModelFile = self.get_parameter('detectorModelFile').value
@@ -117,6 +135,9 @@ class PerceptionNode(Node):
             keypointConfidence=leaderSettings['keypointConfidence'])
         self.obstacleSettings = SimpleNamespace(
             **{settingName: self.get_parameter(settingName).value for settingName in OBSTACLE_SETTING_DEFAULTS})
+        self.velocitySettings = SimpleNamespace(
+            **{settingName: self.get_parameter(settingName).value for settingName in VELOCITY_SETTING_DEFAULTS})
+        self.graceTime = leaderSettings['graceTime']
 
         self.imageBridge = CvBridge()
         self.lastDebugMessage = ''
@@ -131,8 +152,12 @@ class PerceptionNode(Node):
         self.cameraPosition = Point()
         self.lastLeaderPosition = None
         self.lastKnownLeaderPoint = None
-        self.lastKnownLeaderSeconds = 0.0
-        self.lastKnownLeaderUncertainty = 0.0
+        self.robotPose = MakeStillRobotPose()
+        self.lastOdometrySeconds = None
+        self.lastOdometryArrivalSeconds = None
+        self.odometryRestarted = False
+        self.velocityTracker = VelocityTracker(self.velocitySettings)
+        self.clockOffsetEstimator = ClockOffsetEstimator(self.velocitySettings.clockOffsetWindow)
         self.transformBuffer = tf2_ros.Buffer()
         self.transformListener = tf2_ros.TransformListener(self.transformBuffer, self)
 
@@ -161,11 +186,12 @@ class PerceptionNode(Node):
             self.PublishDebugMessage('LeaderManager', 'saved leader is from an older version or another model, calibrate again')
 
         # Input topics
-        newestImageQos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT, depth=1)
+        newestMessageQos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT, depth=1)
+        self.create_subscription(Odometry, '/utlidar/robot_odom', self.HandleRobotOdometry, newestMessageQos)
         self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.HandleDepthImage,
-                                 newestImageQos)
-        self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.HandleCameraInfo, newestImageQos)
-        self.create_subscription(Image, '/camera/camera/color/image_raw', self.HandleColorImage, newestImageQos)
+                                 newestMessageQos)
+        self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.HandleCameraInfo, newestMessageQos)
+        self.create_subscription(Image, '/camera/camera/color/image_raw', self.HandleColorImage, newestMessageQos)
 
     def HandleColorImage(self, colorImageMessage):
         imageSeconds = ConvertStampToSeconds(colorImageMessage.header.stamp)
@@ -183,19 +209,21 @@ class PerceptionNode(Node):
         leaderEvent = self.UpdateLeader(detectedPeople, imageBgr, imageSeconds)
         self.HandleLeaderEvent(leaderEvent)
         peoplePositions = self.PlacePeople(detectedPeople, imageSeconds)
-        peopleCircles = {trackId: BuildPersonCircle(personPosition, self.cameraPosition, self.obstacleSettings)
-                         for trackId, personPosition in peoplePositions.items()}
+        self.robotPose = self.FindRobotPose(imageSeconds)
+        peopleEstimates, peopleCircles, leaderEstimate, leaderCircle = self.TrackPeopleMotion(peoplePositions,
+                                                                                               imageSeconds)
         leaderPosition = peoplePositions.get(self.leaderManager.visibleLeaderTrackId)
         leaderClosestPoint = None
-        if leaderPosition is not None:
-            leaderClosestPoint = FindClosestPointToRobot(peopleCircles[self.leaderManager.visibleLeaderTrackId])
-            self.RememberLeaderPosition(leaderPosition, leaderClosestPoint, imageSeconds)
+        if leaderCircle is not None:
+            leaderClosestPoint = FindClosestPointToRobot(leaderCircle)
+            self.RememberLeaderPosition(leaderPosition, leaderClosestPoint)
         header = Header(stamp=colorImageMessage.header.stamp, frame_id=BASE_FRAME)
-        self.leaderPublisher.publish(self.BuildLeaderMessage(leaderClosestPoint, imageSeconds, header))
+        self.leaderPublisher.publish(self.BuildLeaderMessage(leaderClosestPoint, leaderEstimate, imageSeconds, header))
         self.obstaclesPublisher.publish(
-            self.BuildObstaclesMessage(detectedPeople, peoplePositions, peopleCircles, leaderClosestPoint, header))
+            self.BuildObstaclesMessage(detectedPeople, peopleEstimates, peopleCircles, leaderClosestPoint, header))
         self.debugFramePublisher.publish(self.BuildDebugFrameMessage(
-            detectedPeople, peoplePositions, leaderPosition, detectorTimeMilliseconds, imageSeconds, header))
+            detectedPeople, peoplePositions, peopleEstimates, leaderPosition, detectorTimeMilliseconds, imageSeconds,
+            header))
 
     def HandleDepthImage(self, depthImageMessage):
         self.depthImagesByStamp[ConvertStampToSeconds(depthImageMessage.header.stamp)] = depthImageMessage
@@ -204,6 +232,28 @@ class PerceptionNode(Node):
 
     def HandleCameraInfo(self, cameraInfoMessage):
         self.cameraModel = BuildCameraModel(cameraInfoMessage)
+
+    def HandleRobotOdometry(self, odometryMessage):
+        arrivalSeconds = self.get_clock().now().nanoseconds * 1e-9
+        if self.lastOdometryArrivalSeconds is None:
+            self.get_logger().info('RobotOdometry: odometry started, velocities are now over the ground')
+            self.odometryRestarted = True
+        elif arrivalSeconds - self.lastOdometryArrivalSeconds > self.velocitySettings.odometryTimeout:
+            self.PublishDebugMessage('RobotOdometry', 'odometry back, velocity filters restarted')
+            self.clockOffsetEstimator.Reset()
+            self.odometryRestarted = True
+        self.lastOdometryArrivalSeconds = arrivalSeconds
+        correctedSeconds = self.clockOffsetEstimator.CorrectStamp(
+            ConvertStampToSeconds(odometryMessage.header.stamp), arrivalSeconds)
+        odometryTransform = TransformStamped()
+        odometryTransform.header.stamp = Time(seconds=correctedSeconds).to_msg()
+        odometryTransform.header.frame_id = ODOMETRY_FRAME
+        odometryTransform.child_frame_id = BASE_FRAME
+        robotPosition = odometryMessage.pose.pose.position
+        odometryTransform.transform.translation = Vector3(x=robotPosition.x, y=robotPosition.y, z=robotPosition.z)
+        odometryTransform.transform.rotation = odometryMessage.pose.pose.orientation
+        self.transformBuffer.set_transform(odometryTransform, ODOMETRY_AUTHORITY)
+        self.lastOdometrySeconds = correctedSeconds
 
     def HandleCalibrateLeader(self, request, response):
         if request.track_id == CENTER_PERSON_TRACK_ID:
@@ -299,29 +349,88 @@ class PerceptionNode(Node):
             return None
         return self.depthImagesByStamp[nearestDepthSeconds]
 
-    def RememberLeaderPosition(self, leaderPosition, leaderClosestPoint, imageSeconds):
+    def FindRobotPose(self, imageSeconds):
+        if self.lastOdometrySeconds is None:
+            return MakeStillRobotPose()
+        silentSeconds = imageSeconds - self.lastOdometrySeconds
+        lookupTime = Time() if silentSeconds > 0.0 else Time(seconds=imageSeconds)
+        try:
+            odometryTransform = self.transformBuffer.lookup_transform(ODOMETRY_FRAME, BASE_FRAME, lookupTime)
+        except tf2_ros.TransformException:
+            odometryTransform = self.transformBuffer.lookup_transform(ODOMETRY_FRAME, BASE_FRAME, Time())
+        if silentSeconds > self.velocitySettings.odometryTimeout:
+            self.PublishDebugMessage('RobotOdometry', 'no /utlidar/robot_odom, robot motion uncertain')
+        robotTranslation = odometryTransform.transform.translation
+        robotPose = MakeRobotPose(robotTranslation.x, robotTranslation.y,
+                                  ConvertQuaternionToHeading(odometryTransform.transform.rotation), silentSeconds,
+                                  self.velocitySettings)
+        if self.odometryRestarted:
+            self.odometryRestarted = False
+            self.velocityTracker.ResetAll()
+            self.MoveLastKnownLeaderPoint(robotPose)
+        return robotPose
+
+    def MoveLastKnownLeaderPoint(self, newRobotPose):
+        lastKnownPoint = self.FindLastKnownLeaderPoint()
+        if lastKnownPoint is not None:
+            self.lastKnownLeaderPoint = MakeFloorPoint(*ConvertPointToOdom(newRobotPose, lastKnownPoint.x,
+                                                                           lastKnownPoint.y))
+
+    def TrackPeopleMotion(self, peoplePositions, imageSeconds):
+        peopleMeasurements = {}
+        measuredRadii = {}
+        for trackId, personPosition in peoplePositions.items():
+            measuredCircle = BuildPersonCircle(personPosition, self.cameraPosition, self.obstacleSettings)
+            measuredRadii[trackId] = measuredCircle.radius
+            peopleMeasurements[trackId] = BuildMeasurement(measuredCircle, personPosition.uncertainty, self.robotPose,
+                                                           self.velocitySettings)
+        peopleEstimates = {}
+        peopleCircles = {}
+        for trackId, motionEstimate in self.velocityTracker.UpdatePeople(peopleMeasurements, imageSeconds).items():
+            peopleEstimates[trackId] = ConvertEstimateToBase(self.robotPose, motionEstimate)
+            peopleCircles[trackId] = PersonCircle(peopleEstimates[trackId].positionX,
+                                                  peopleEstimates[trackId].positionY, measuredRadii[trackId])
+        leaderTrackId = self.leaderManager.visibleLeaderTrackId
+        leaderEstimate = self.velocityTracker.UpdateLeader(peopleMeasurements.get(leaderTrackId), imageSeconds,
+                                                           self.graceTime)
+        if leaderEstimate is None:
+            return peopleEstimates, peopleCircles, None, None
+        leaderEstimate = ConvertEstimateToBase(self.robotPose, leaderEstimate)
+        leaderCircle = None
+        if leaderTrackId in peopleMeasurements:
+            leaderCircle = PersonCircle(leaderEstimate.positionX, leaderEstimate.positionY, measuredRadii[leaderTrackId])
+        return peopleEstimates, peopleCircles, leaderEstimate, leaderCircle
+
+    def RememberLeaderPosition(self, leaderPosition, leaderClosestPoint):
         self.lastLeaderPosition = leaderPosition.position
-        self.lastKnownLeaderPoint = leaderClosestPoint
-        self.lastKnownLeaderSeconds = imageSeconds
-        self.lastKnownLeaderUncertainty = EstimatePositionUncertainty(leaderPosition, self.obstacleSettings)
+        self.lastKnownLeaderPoint = MakeFloorPoint(*ConvertPointToOdom(self.robotPose, leaderClosestPoint.x,
+                                                                       leaderClosestPoint.y))
+
+    def FindLastKnownLeaderPoint(self):
+        if self.lastKnownLeaderPoint is None:
+            return None
+        return MakeFloorPoint(*ConvertPointToBase(self.robotPose, self.lastKnownLeaderPoint.x,
+                                                  self.lastKnownLeaderPoint.y))
 
     def ForgetLeaderPosition(self):
         self.lastLeaderPosition = None
         self.lastKnownLeaderPoint = None
+        self.velocityTracker.ResetLeader()
 
-    def BuildLeaderMessage(self, leaderClosestPoint, imageSeconds, header):
+    def BuildLeaderMessage(self, leaderClosestPoint, leaderEstimate, imageSeconds, header):
         leaderMessage = PerceptionLeader()
         leaderMessage.header = header
         leaderMessage.status = self.FindLeaderStatus()
         leaderMessage.closest_point = leaderClosestPoint if leaderClosestPoint is not None else MakeUnknownPoint()
-        leaderMessage.velocity_uncertainty = UNKNOWN_VELOCITY_UNCERTAINTY
         leaderMessage.lost_duration = self.CalculateSecondsSinceSeen(imageSeconds)
-        leaderMessage.last_known_point = MakeUnknownPoint()
+        lastKnownPoint = self.FindLastKnownLeaderPoint()
+        leaderMessage.last_known_point = lastKnownPoint if lastKnownPoint is not None else MakeUnknownPoint()
         leaderMessage.position_uncertainty = math.nan
-        if self.lastKnownLeaderPoint is not None:
-            leaderMessage.last_known_point = self.lastKnownLeaderPoint
-            pointAgeSeconds = max(0.0, imageSeconds - self.lastKnownLeaderSeconds)
-            leaderMessage.position_uncertainty = self.lastKnownLeaderUncertainty + UNKNOWN_VELOCITY_UNCERTAINTY * pointAgeSeconds
+        leaderMessage.velocity_uncertainty = self.velocitySettings.unknownVelocitySigma
+        if leaderEstimate is not None:
+            leaderMessage.velocity = MakeVelocityVector(leaderEstimate)
+            leaderMessage.position_uncertainty = leaderEstimate.positionSigma
+            leaderMessage.velocity_uncertainty = leaderEstimate.velocitySigma
         return leaderMessage
 
     def FindLeaderStatus(self):
@@ -336,13 +445,13 @@ class PerceptionNode(Node):
             return math.nan
         return max(0.0, imageSeconds - self.leaderManager.lastSeenSeconds)
 
-    def BuildObstaclesMessage(self, detectedPeople, peoplePositions, peopleCircles, leaderClosestPoint, header):
-        lineOfSightEnd = leaderClosestPoint if leaderClosestPoint is not None else self.lastKnownLeaderPoint
+    def BuildObstaclesMessage(self, detectedPeople, peopleEstimates, peopleCircles, leaderClosestPoint, header):
+        lineOfSightEnd = leaderClosestPoint if leaderClosestPoint is not None else self.FindLastKnownLeaderPoint()
         obstaclesMessage = PerceptionObstacleArray()
         obstaclesMessage.header = header
         for person in detectedPeople:
-            personPosition = peoplePositions.get(person.trackId)
-            if personPosition is None or person.trackId == self.leaderManager.visibleLeaderTrackId:
+            motionEstimate = peopleEstimates.get(person.trackId)
+            if motionEstimate is None or person.trackId == self.leaderManager.visibleLeaderTrackId:
                 continue
             personCircle = peopleCircles[person.trackId]
             obstacle = PerceptionObstacle()
@@ -350,15 +459,20 @@ class PerceptionNode(Node):
             obstacle.line_of_sight_point = MakeUnknownPoint()
             if lineOfSightEnd is not None:
                 obstacle.line_of_sight_point = FindClosestPointToLine(personCircle, self.cameraPosition, lineOfSightEnd)
-            obstacle.position_uncertainty = EstimatePositionUncertainty(personPosition, self.obstacleSettings)
-            obstacle.velocity_uncertainty = UNKNOWN_VELOCITY_UNCERTAINTY
+            obstacle.velocity = MakeVelocityVector(motionEstimate)
+            obstacle.position_uncertainty = motionEstimate.positionSigma
+            obstacle.velocity_uncertainty = motionEstimate.velocitySigma
             obstaclesMessage.obstacles.append(obstacle)
         return obstaclesMessage
 
-    def BuildDebugFrameMessage(self, detectedPeople, peoplePositions, leaderPosition, detectorTimeMilliseconds,
-                               imageSeconds, header):
+    def BuildDebugFrameMessage(self, detectedPeople, peoplePositions, peopleEstimates, leaderPosition,
+                               detectorTimeMilliseconds, imageSeconds, header):
         debugFrameMessage = PerceptionDebugFrame()
         debugFrameMessage.header = header
+        debugFrameMessage.odometry_age = math.nan
+        if self.lastOdometrySeconds is not None:
+            debugFrameMessage.odometry_age = max(0.0, imageSeconds - self.lastOdometrySeconds)
+        debugFrameMessage.clock_offset = self.clockOffsetEstimator.offsetSeconds
         debugFrameMessage.leader_state = self.leaderManager.state
         debugFrameMessage.leader_track_id = self.leaderManager.visibleLeaderTrackId
         debugFrameMessage.seconds_since_seen = self.CalculateSecondsSinceSeen(imageSeconds)
@@ -392,6 +506,11 @@ class PerceptionNode(Node):
             debugPerson.position_valid = personPosition is not None
             if personPosition is not None:
                 debugPerson.position = personPosition.position
+            motionEstimate = peopleEstimates.get(detectedPerson.trackId)
+            debugPerson.velocity_uncertainty = math.nan
+            if motionEstimate is not None:
+                debugPerson.velocity = MakeVelocityVector(motionEstimate)
+                debugPerson.velocity_uncertainty = motionEstimate.velocitySigma
             debugFrameMessage.people.append(debugPerson)
         return debugFrameMessage
 
@@ -422,6 +541,15 @@ class PerceptionNode(Node):
 
 def ConvertStampToSeconds(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
+
+
+def ConvertQuaternionToHeading(rotation):
+    return math.atan2(2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
+                      1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z))
+
+
+def MakeVelocityVector(motionEstimate):
+    return Vector3(x=motionEstimate.velocityX, y=motionEstimate.velocityY, z=0.0)
 
 
 def main(args=None):

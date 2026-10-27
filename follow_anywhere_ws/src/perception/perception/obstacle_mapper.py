@@ -6,7 +6,8 @@ To include:
 - closest point: the circle point nearest the robot (base_link origin).
 - line of sight point: the circle point nearest the line camera -> leader (the line point itself when the circle
   crosses the line).
-- position uncertainty: spread of the depth samples, at least minimumPositionUncertainty.
+- The circle is built from the measurement (centre fed to velocity_tracker), then again around the filtered centre
+  with the same radius; the published points come from the filtered circle.
 - Everything 2D in base_link (z = 0).
 - Later: static obstacles from the lidar (/utlidar/cloud_base, ground removed, obstacleMaxRange), the depth image as
   fallback; points of a tracked person are not also a static obstacle.
@@ -21,7 +22,6 @@ from geometry_msgs.msg import Point
 OBSTACLE_SETTING_DEFAULTS = {
     'personRadiusMin': 0.15,
     'personRadiusMax': 0.4,
-    'minimumPositionUncertainty': 0.05,
 }
 
 # Geometry
@@ -68,10 +68,6 @@ def FindCirclePointTowards(personCircle, targetX, targetY):
         return MakeFloorPoint(targetX, targetY)
     return MakeFloorPoint(personCircle.centerX + personCircle.radius * offsetX / targetDistance,
                           personCircle.centerY + personCircle.radius * offsetY / targetDistance)
-
-
-def EstimatePositionUncertainty(personPosition, settings):
-    return max(personPosition.uncertainty, settings.minimumPositionUncertainty)
 
 
 def MakeFloorPoint(pointX, pointY):
