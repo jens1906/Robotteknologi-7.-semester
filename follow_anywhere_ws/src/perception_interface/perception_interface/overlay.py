@@ -30,12 +30,13 @@ NOTICE_COLOR = (0, 165, 255)
 CLICK_MARKER_COLOR = (0, 220, 255)
 STATE_COLORS = ((255, 255, 255), (0, 220, 255), (0, 220, 0), (0, 165, 255), (60, 60, 255))
 
-# Leader states (PerceptionLeaderState)
+# Leader states (PerceptionDebugFrame.leader_state)
 STATE_NAMES = ('IDLE', 'ENROLLING', 'FOLLOWING', 'SEARCHING', 'LOST')
 ENROLLING_STATE = 1
 FOLLOWING_STATE = 2
 SEARCHING_STATE = 3
 LOST_STATE = 4
+NO_TRACK_ID = -1
 
 # Text and drawing
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -109,41 +110,43 @@ def DrawTopDownMap(image, trackedPeople, mapRangeMeters):
     mapArea[:] = cv2.addWeighted(mapImage, MAP_OPACITY, mapArea, 1.0 - MAP_OPACITY, 0)
 
 
-def DrawLeaderBanner(image, leaderState):
-    if leaderState is None:
-        bannerText, bannerColor = 'LEADER: no leader_state yet', HEADER_COLOR
-    elif leaderState.state in (FOLLOWING_STATE, SEARCHING_STATE, LOST_STATE) and not leaderState.leader_visible:
-        bannerText, bannerColor = DescribeLeaderOutOfFrame(leaderState), NOTICE_COLOR
-    elif leaderState.state == FOLLOWING_STATE:
-        bannerText, bannerColor = DescribeFollowedLeader(leaderState), LEADER_COLOR
-    elif leaderState.state == ENROLLING_STATE:
-        bannerText = f'LEADER: ENROLLING, turn around slowly  {DescribeStoredViews(leaderState)}'
+def DrawLeaderBanner(image, debugFrame):
+    if debugFrame is None:
+        bannerText, bannerColor = 'LEADER: no debug_frame yet', HEADER_COLOR
+    elif (debugFrame.leader_state in (FOLLOWING_STATE, SEARCHING_STATE, LOST_STATE)
+          and debugFrame.leader_track_id == NO_TRACK_ID):
+        bannerText, bannerColor = DescribeLeaderOutOfFrame(debugFrame), NOTICE_COLOR
+    elif debugFrame.leader_state == FOLLOWING_STATE:
+        bannerText, bannerColor = DescribeFollowedLeader(debugFrame), LEADER_COLOR
+    elif debugFrame.leader_state == ENROLLING_STATE:
+        bannerText = f'LEADER: ENROLLING, turn around slowly  {DescribeStoredViews(debugFrame)}'
         bannerColor = STATE_COLORS[ENROLLING_STATE]
     else:
-        bannerText, bannerColor = f'LEADER: {STATE_NAMES[leaderState.state]}', STATE_COLORS[leaderState.state]
+        bannerText = f'LEADER: {STATE_NAMES[debugFrame.leader_state]}'
+        bannerColor = STATE_COLORS[debugFrame.leader_state]
     DrawLabel(image, bannerText, 0, BANNER_BOTTOM_PIXELS, bannerColor, 0.6)
 
 
-def DescribeLeaderOutOfFrame(leaderState):
-    if math.isnan(leaderState.seconds_since_seen):
-        return f'LEADER: {STATE_NAMES[leaderState.state]}, looking for the saved leader'
-    statusText = 'LEADER LOST' if leaderState.state == LOST_STATE else 'LEADER NOT IN FRAME'
-    description = f'{statusText}: last seen {leaderState.seconds_since_seen:.0f} s ago'
-    if not math.isnan(leaderState.last_seen_position.x):
-        description += f' at x {leaderState.last_seen_position.x:.1f} y {leaderState.last_seen_position.y:.1f} m'
+def DescribeLeaderOutOfFrame(debugFrame):
+    if math.isnan(debugFrame.seconds_since_seen):
+        return f'LEADER: {STATE_NAMES[debugFrame.leader_state]}, looking for the saved leader'
+    statusText = 'LEADER LOST' if debugFrame.leader_state == LOST_STATE else 'LEADER NOT IN FRAME'
+    description = f'{statusText}: last seen {debugFrame.seconds_since_seen:.0f} s ago'
+    if not math.isnan(debugFrame.last_seen_position.x):
+        description += f' at x {debugFrame.last_seen_position.x:.1f} y {debugFrame.last_seen_position.y:.1f} m'
     return description
 
 
-def DescribeFollowedLeader(leaderState):
-    description = f'LEADER: FOLLOWING #{leaderState.track_id}'
-    if not math.isnan(leaderState.distance):
-        description += f'  {leaderState.distance:.1f} m'
-    return f'{description}  views {DescribeStoredViews(leaderState)}'
+def DescribeFollowedLeader(debugFrame):
+    description = f'LEADER: FOLLOWING #{debugFrame.leader_track_id}'
+    if not math.isnan(debugFrame.leader_distance):
+        description += f'  {debugFrame.leader_distance:.1f} m'
+    return f'{description}  views {DescribeStoredViews(debugFrame)}'
 
 
-def DescribeStoredViews(leaderState):
-    return (f'f{leaderState.front_views} b{leaderState.back_views} l{leaderState.side_left_views} '
-            f'r{leaderState.side_right_views} h{leaderState.partly_hidden_views}')
+def DescribeStoredViews(debugFrame):
+    return (f'f{debugFrame.front_views} b{debugFrame.back_views} l{debugFrame.side_left_views} '
+            f'r{debugFrame.side_right_views} h{debugFrame.partly_hidden_views}')
 
 
 def DrawHeader(image, text):

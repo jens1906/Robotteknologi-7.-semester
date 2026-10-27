@@ -11,7 +11,7 @@ To include:
   person). Ignore 0 / out-of-range depth (depthMin..depthMax); no usable depth, or less than
   minimumValidDepthShare of the sampled pixels usable (person closer than depthMin) -> position_valid = false.
 - Size (width, height) from the box and the depth; uncertainty from the spread of the depth samples.
-- distance (horizontal) and angle (0 = straight ahead, positive = left) for the leader message.
+- Horizontal distance of the leader for the debug frame.
 - Later: depth image -> points for obstacle_mapper's fallback when there is no lidar.
 """
 
@@ -140,5 +140,5 @@ def KeepValidDepths(depthValues, settings):
     return flatDepths[(flatDepths >= settings.depthMin) & (flatDepths <= settings.depthMax)]
 
 
-def CalculateDistanceAndAngle(position):
-    return math.hypot(position.x, position.y), math.atan2(position.y, position.x)
+def CalculateHorizontalDistance(position):
+    return math.hypot(position.x, position.y)

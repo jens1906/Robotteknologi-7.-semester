@@ -32,7 +32,7 @@ UPPER_BODY = 'upper'
 LOWER_BODY = 'lower'
 NO_BODY = 'none'
 
-# View groups (the same order as the view counts in PerceptionLeaderState)
+# View groups (the same order as the view counts in PerceptionDebugFrame)
 FRONT_GROUP = 0
 BACK_GROUP = 1
 SIDE_LEFT_GROUP = 2

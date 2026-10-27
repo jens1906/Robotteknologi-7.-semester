@@ -8,5 +8,5 @@ To include:
   each image's timestamp, from sensor_input) -> velocity_compensated = true.
   use_odometry false: no shift -> relative velocity, includes the robot's own motion.
 - use_velocity false: still filter (it smooths positions), but report velocity_valid = false.
-- Gives the smoothed position, velocity and uncertainty per id to leader_state and obstacle_mapper.
+- Gives the smoothed position, velocity and uncertainty per id to the leader message and obstacle_mapper.
 """

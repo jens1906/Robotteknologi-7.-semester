@@ -65,5 +65,8 @@ perception_node:
     trackTimeout: 1.0                        # s without measurement before a filter is dropped
 
     # --- obstacles ------------------------------------------------------------------------------
-    obstacleMaxRange: 6.0                    # m, farther points are ignored
+    personRadiusMin: 0.15                    # GUESS: m, smallest radius of the circle a person is modelled as (half the box width)
+    personRadiusMax: 0.4                     # GUESS: m, largest radius (arms out make the box wide)
+    minimumPositionUncertainty: 0.05         # GUESS: m, 1 sigma, at least this even when the depth samples agree
+    obstacleMaxRange: 6.0                   # m, farther points are ignored
     groundHeight: 0.05                       # m above the ground plane that counts as ground

@@ -13,12 +13,11 @@ find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   # perception
-  "msg/PerceptionFrameStats.msg"
-  "msg/PerceptionLeaderState.msg"
+  "msg/PerceptionDebugFrame.msg"
+  "msg/PerceptionDebugPerson.msg"
+  "msg/PerceptionLeader.msg"
   "msg/PerceptionObstacle.msg"
   "msg/PerceptionObstacleArray.msg"
-  "msg/PerceptionTrackedPerson.msg"
-  "msg/PerceptionTrackedPersonArray.msg"
   "srv/PerceptionCalibrateLeader.srv"
   # navigation: add here
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs

@@ -8,7 +8,8 @@ To include:
 - Subscriptions, all QoS best effort + keep last 1 (a slow WiFi skips frames instead of falling behind):
   - compressed colour image (sensor_msgs/CompressedImage, `.../image_raw/compressed`), decoded with
     cv2.imdecode. Never the raw image: ~27 MB/s over WiFi against ~1-2 MB/s compressed.
-  - /perception/tracked_people and /perception/leader_state (small messages).
+  - /perception/debug_frame (small message: people boxes + leader details of one frame, so the banner always
+    belongs to the boxes it is drawn with).
 - No frame cap: shows as many frames as the network and the laptop manage, up to the camera's rate.
 - Matching: keep the last image_buffer images by timestamp; a result (stamped with its camera image's
   time) is drawn on the image with the same stamp.
@@ -33,7 +34,7 @@ from collections import deque
 import cv2
 import numpy as np
 import rclpy
-from follow_anywhere_interfaces.msg import PerceptionLeaderState, PerceptionTrackedPersonArray
+from follow_anywhere_interfaces.msg import PerceptionDebugFrame
 from follow_anywhere_interfaces.srv import PerceptionCalibrateLeader
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
@@ -87,9 +88,8 @@ class PerceptionViewer(Node):
         self.mapRangeMeters = self.get_parameter('mapRangeMeters').value
 
         self.imageBuffer = deque(maxlen=self.imageBufferSize)
-        self.latestTrackedPeople = None
-        self.latestTrackedPeopleArrivalSeconds = 0.0
-        self.latestLeaderState = None
+        self.latestDebugFrame = None
+        self.latestDebugFrameArrivalSeconds = 0.0
         self.shownTrackedPeople = []
         self.lastShownImage = None
         self.lastShownSeconds = time.monotonic()
@@ -111,10 +111,8 @@ class PerceptionViewer(Node):
         newestMessageQos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT, depth=1)
         self.create_subscription(CompressedImage, '/camera/camera/color/image_raw/compressed',
                                  self.HandleCompressedImage, newestMessageQos)
-        self.create_subscription(PerceptionTrackedPersonArray, '/perception/tracked_people',
-                                 self.HandleTrackedPeople, newestMessageQos)
-        self.create_subscription(PerceptionLeaderState, '/perception/leader_state',
-                                 self.HandleLeaderState, newestMessageQos)
+        self.create_subscription(PerceptionDebugFrame, '/perception/debug_frame',
+                                 self.HandleDebugFrame, newestMessageQos)
 
         # Services
         self.calibrateLeaderClient = self.create_client(PerceptionCalibrateLeader, '/perception/calibrate_leader')
@@ -129,27 +127,24 @@ class PerceptionViewer(Node):
         stampNanoseconds = ConvertStampToNanoseconds(imageMessage.header.stamp)
         self.imageBuffer.append((stampNanoseconds, arrivalSeconds, imageMessage))
         if not self.exactMode:
-            trackedPeopleAgeSeconds = arrivalSeconds - self.latestTrackedPeopleArrivalSeconds
-            freshTrackedPeople = self.latestTrackedPeople if trackedPeopleAgeSeconds < SILENCE_SECONDS else None
-            self.DrawAndShowImage(imageMessage, freshTrackedPeople, trackedPeopleAgeSeconds)
-        elif (self.latestTrackedPeople is not None
-              and ConvertStampToNanoseconds(self.latestTrackedPeople.header.stamp) == stampNanoseconds):
-            self.DrawAndShowImage(imageMessage, self.latestTrackedPeople, 0.0)
+            debugFrameAgeSeconds = arrivalSeconds - self.latestDebugFrameArrivalSeconds
+            freshDebugFrame = self.latestDebugFrame if debugFrameAgeSeconds < SILENCE_SECONDS else None
+            self.DrawAndShowImage(imageMessage, freshDebugFrame, debugFrameAgeSeconds)
+        elif (self.latestDebugFrame is not None
+              and ConvertStampToNanoseconds(self.latestDebugFrame.header.stamp) == stampNanoseconds):
+            self.DrawAndShowImage(imageMessage, self.latestDebugFrame, 0.0)
 
-    def HandleTrackedPeople(self, trackedPeopleMessage):
+    def HandleDebugFrame(self, debugFrameMessage):
         arrivalSeconds = time.monotonic()
-        self.latestTrackedPeople = trackedPeopleMessage
-        self.latestTrackedPeopleArrivalSeconds = arrivalSeconds
+        self.latestDebugFrame = debugFrameMessage
+        self.latestDebugFrameArrivalSeconds = arrivalSeconds
         if not self.exactMode:
             return
-        stampNanoseconds = ConvertStampToNanoseconds(trackedPeopleMessage.header.stamp)
+        stampNanoseconds = ConvertStampToNanoseconds(debugFrameMessage.header.stamp)
         for imageStampNanoseconds, imageArrivalSeconds, imageMessage in self.imageBuffer:
             if imageStampNanoseconds == stampNanoseconds:
-                self.DrawAndShowImage(imageMessage, trackedPeopleMessage, arrivalSeconds - imageArrivalSeconds)
+                self.DrawAndShowImage(imageMessage, debugFrameMessage, arrivalSeconds - imageArrivalSeconds)
                 return
-
-    def HandleLeaderState(self, leaderStateMessage):
-        self.latestLeaderState = leaderStateMessage
 
     def HandleMouseEvent(self, event, windowX, windowY, flags, parameter):
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -175,14 +170,14 @@ class PerceptionViewer(Node):
             self.HandleWindowClick(windowX, windowY)
         self.ReportNothingToShow(time.monotonic())
 
-    def DrawAndShowImage(self, imageMessage, trackedPeopleMessage, resultDelaySeconds):
+    def DrawAndShowImage(self, imageMessage, debugFrameMessage, resultDelaySeconds):
         image = cv2.imdecode(np.frombuffer(imageMessage.data, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
             self.PublishDebugMessage('Image', 'could not decode the compressed image')
             return
-        self.shownTrackedPeople = trackedPeopleMessage.people if trackedPeopleMessage is not None else []
+        self.shownTrackedPeople = debugFrameMessage.people if debugFrameMessage is not None else []
         overlay.DrawTrackedPeople(image, self.shownTrackedPeople, self.showDistances)
-        overlay.DrawLeaderBanner(image, self.latestLeaderState)
+        overlay.DrawLeaderBanner(image, debugFrameMessage)
         if self.showMap:
             overlay.DrawTopDownMap(image, self.shownTrackedPeople, self.mapRangeMeters)
         nowSeconds = time.monotonic()

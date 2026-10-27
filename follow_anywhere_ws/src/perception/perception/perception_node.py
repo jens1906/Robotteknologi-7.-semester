@@ -12,16 +12,18 @@ To include:
   come from the venv and the system numpy / cv_bridge keep priority.
 - Two threads, so re-identification never stalls the video:
   1. frames: newest frame -> person_detector -> coordinate_conversion -> velocity_tracker ->
-     obstacle_mapper -> publish tracked_people + obstacles.
+     obstacle_mapper -> publish leader + obstacles + debug_frame.
   2. leader: re-identification for leader_manager (enrol / verify / search), using the newest people;
-     its result is merged into the next published leader_state.
+     its result is merged into the next published leader.
   (For now the leader update runs inline in the frame callback; the second thread comes when it is needed.)
 - Inputs: colour image, aligned depth image (paired with the colour image by stamp), camera_info, and the TF
   base_link <- camera_color_optical_frame (camera mounting from the launch file + the RealSense driver).
 - Publish (all stamped with the camera image's time, frame base_link):
-  /perception/leader_state (the leader, with position / distance / angle / last seen position),
-  /perception/obstacles (every other tracked person as a dynamic obstacle; the leader is not in it),
-  /perception/tracked_people, /perception/frame_stats (cost of the frame, for PlotJuggler).
+  Output: /perception/leader (status, closest point, velocity, uncertainties, lost duration, last known point),
+  /perception/obstacles (every other tracked person: closest point to the robot and to the line of sight,
+  velocity, uncertainties; the leader is not in it).
+  Debug: /perception/debug_frame (boxes, leader details, cost of the frame; for the viewer and PlotJuggler),
+  /perception/debug (error lines).
 - No depth, camera_info or TF: positions are invalid (one debug line), tracking and the leader keep working.
 - Service /perception/calibrate_leader (follow_anywhere_interfaces/PerceptionCalibrateLeader): enrol the
   person with the given track id, -1 = the person nearest the image centre. Called by the viewer
@@ -30,7 +32,7 @@ To include:
 - The leader is always loaded at start (~/.ros/follow_anywhere/perception_leader.npz).
 - Headless: no window here. The viewer runs in perception_interface on a laptop and reads the
   compressed image the RealSense driver publishes (raw images never leave the robot).
-- Fill velocity fields with NaN and velocity_valid = false while use_velocity is off.
+- Velocity: 0 with velocity_uncertainty = UNKNOWN_VELOCITY_UNCERTAINTY until the velocity tracker exists.
 """
 
 import math
@@ -42,9 +44,9 @@ import rclpy
 import tf2_ros
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from follow_anywhere_interfaces.msg import (PerceptionFrameStats, PerceptionLeaderState, PerceptionObstacle,
-                                            PerceptionObstacleArray, PerceptionTrackedPerson,
-                                            PerceptionTrackedPersonArray)
+from follow_anywhere_interfaces.msg import (PerceptionDebugFrame, PerceptionDebugPerson, PerceptionLeader,
+                                            PerceptionObstacle, PerceptionObstacleArray)
+from geometry_msgs.msg import Point
 from follow_anywhere_interfaces.srv import PerceptionCalibrateLeader
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
@@ -55,9 +57,11 @@ from std_srvs.srv import Trigger
 
 from perception.body_view import BACK_GROUP, FRONT_GROUP, PARTLY_HIDDEN_GROUP, SIDE_LEFT_GROUP, SIDE_RIGHT_GROUP
 from perception.coordinate_conversion import (COORDINATE_SETTING_DEFAULTS, BuildCameraModel,
-                                              CalculateDistanceAndAngle, ConvertDepthImage, PlacePerson)
-from perception.leader_manager import (ENROLL_FAILED_EVENT, ENROLLED_EVENT, LEADER_SETTING_DEFAULTS, NO_EVENT,
-                                       NO_TRACK_ID, LeaderManager)
+                                              CalculateHorizontalDistance, ConvertDepthImage, PlacePerson)
+from perception.leader_manager import (ENROLL_FAILED_EVENT, ENROLLED_EVENT, ENROLLING_STATE, IDLE_STATE,
+                                       LEADER_SETTING_DEFAULTS, NO_EVENT, NO_TRACK_ID, LeaderManager)
+from perception.obstacle_mapper import (OBSTACLE_SETTING_DEFAULTS, BuildPersonCircle, EstimatePositionUncertainty,
+                                        FindClosestPointToLine, FindClosestPointToRobot, MakeUnknownPoint)
 from perception.person_detector import PersonDetector
 from perception.reid_model import ReidModel
 
@@ -79,7 +83,9 @@ CENTER_PERSON_TRACK_ID = -1
 BASE_FRAME = 'base_link'
 DEPTH_BUFFER_SIZE = 10
 DEPTH_MATCH_TOLERANCE_SECONDS = 0.05
-PERSON_CLASS_NAME = 'person'
+
+# Velocity until the velocity tracker exists: unknown, so a walking speed as uncertainty (m/s)
+UNKNOWN_VELOCITY_UNCERTAINTY = 1.5
 
 
 class PerceptionNode(Node):
@@ -94,7 +100,8 @@ class PerceptionNode(Node):
         self.declare_parameter('reidModelFile', REID_MODEL_FILE)
         self.declare_parameter('reidThreads', REID_THREADS)
         self.declare_parameter('leaderFile', LEADER_FILE)
-        for settingName, defaultValue in {**LEADER_SETTING_DEFAULTS, **COORDINATE_SETTING_DEFAULTS}.items():
+        allSettingDefaults = {**LEADER_SETTING_DEFAULTS, **COORDINATE_SETTING_DEFAULTS, **OBSTACLE_SETTING_DEFAULTS}
+        for settingName, defaultValue in allSettingDefaults.items():
             self.declare_parameter(settingName, defaultValue)
         self.detectorModelFile = self.get_parameter('detectorModelFile').value
         self.detectorImageSize = self.get_parameter('detectorImageSize').value
@@ -108,6 +115,8 @@ class PerceptionNode(Node):
         self.coordinateSettings = SimpleNamespace(
             **{settingName: self.get_parameter(settingName).value for settingName in COORDINATE_SETTING_DEFAULTS},
             keypointConfidence=leaderSettings['keypointConfidence'])
+        self.obstacleSettings = SimpleNamespace(
+            **{settingName: self.get_parameter(settingName).value for settingName in OBSTACLE_SETTING_DEFAULTS})
 
         self.imageBridge = CvBridge()
         self.lastDebugMessage = ''
@@ -119,15 +128,18 @@ class PerceptionNode(Node):
         self.reidCropCountInFrame = 0
         self.depthImagesByStamp = {}
         self.cameraModel = None
+        self.cameraPosition = Point()
         self.lastLeaderPosition = None
+        self.lastKnownLeaderPoint = None
+        self.lastKnownLeaderSeconds = 0.0
+        self.lastKnownLeaderUncertainty = 0.0
         self.transformBuffer = tf2_ros.Buffer()
         self.transformListener = tf2_ros.TransformListener(self.transformBuffer, self)
 
         # Output topics
-        self.trackedPeoplePublisher = self.create_publisher(PerceptionTrackedPersonArray, '/perception/tracked_people', 10)
-        self.leaderStatePublisher = self.create_publisher(PerceptionLeaderState, '/perception/leader_state', 10)
+        self.leaderPublisher = self.create_publisher(PerceptionLeader, '/perception/leader', 10)
         self.obstaclesPublisher = self.create_publisher(PerceptionObstacleArray, '/perception/obstacles', 10)
-        self.frameStatsPublisher = self.create_publisher(PerceptionFrameStats, '/perception/frame_stats', 10)
+        self.debugFramePublisher = self.create_publisher(PerceptionDebugFrame, '/perception/debug_frame', 10)
         self.debugPublisher = self.create_publisher(String, '/perception/debug', 10)
 
         # Services
@@ -171,16 +183,19 @@ class PerceptionNode(Node):
         leaderEvent = self.UpdateLeader(detectedPeople, imageBgr, imageSeconds)
         self.HandleLeaderEvent(leaderEvent)
         peoplePositions = self.PlacePeople(detectedPeople, imageSeconds)
+        peopleCircles = {trackId: BuildPersonCircle(personPosition, self.cameraPosition, self.obstacleSettings)
+                         for trackId, personPosition in peoplePositions.items()}
         leaderPosition = peoplePositions.get(self.leaderManager.visibleLeaderTrackId)
+        leaderClosestPoint = None
         if leaderPosition is not None:
-            self.lastLeaderPosition = leaderPosition.position
+            leaderClosestPoint = FindClosestPointToRobot(peopleCircles[self.leaderManager.visibleLeaderTrackId])
+            self.RememberLeaderPosition(leaderPosition, leaderClosestPoint, imageSeconds)
         header = Header(stamp=colorImageMessage.header.stamp, frame_id=BASE_FRAME)
-        self.leaderStatePublisher.publish(self.BuildLeaderStateMessage(imageSeconds, header, leaderPosition))
-        self.trackedPeoplePublisher.publish(
-            self.BuildTrackedPeopleMessage(detectedPeople, peoplePositions, imageSeconds, header))
-        self.obstaclesPublisher.publish(self.BuildObstaclesMessage(detectedPeople, peoplePositions, header))
-        self.frameStatsPublisher.publish(
-            self.BuildFrameStatsMessage(detectorTimeMilliseconds, len(detectedPeople), header))
+        self.leaderPublisher.publish(self.BuildLeaderMessage(leaderClosestPoint, imageSeconds, header))
+        self.obstaclesPublisher.publish(
+            self.BuildObstaclesMessage(detectedPeople, peoplePositions, peopleCircles, leaderClosestPoint, header))
+        self.debugFramePublisher.publish(self.BuildDebugFrameMessage(
+            detectedPeople, peoplePositions, leaderPosition, detectorTimeMilliseconds, imageSeconds, header))
 
     def HandleDepthImage(self, depthImageMessage):
         self.depthImagesByStamp[ConvertStampToSeconds(depthImageMessage.header.stamp)] = depthImageMessage
@@ -201,14 +216,14 @@ class PerceptionNode(Node):
             response.message = 'nobody there'
             return response
         self.leaderManager.Enroll(person.trackId, self.latestImageSeconds)
-        self.lastLeaderPosition = None
+        self.ForgetLeaderPosition()
         response.success = True
         response.message = f'enrolling #{person.trackId}'
         return response
 
     def HandleClearLeader(self, request, response):
         self.leaderManager.Reset()
-        self.lastLeaderPosition = None
+        self.ForgetLeaderPosition()
         if os.path.exists(self.leaderFilePath):
             os.remove(self.leaderFilePath)
         response.success = True
@@ -262,6 +277,8 @@ class PerceptionNode(Node):
         except tf2_ros.TransformException as error:
             self.PublishDebugMessage('CoordinateConversion', f'no TF {BASE_FRAME} <- {depthImageMessage.header.frame_id}: {error}')
             return {}
+        cameraTranslation = opticalToBaseTransform.transform.translation
+        self.cameraPosition = Point(x=cameraTranslation.x, y=cameraTranslation.y, z=cameraTranslation.z)
         try:
             depthMeters = ConvertDepthImage(depthImageMessage, self.imageBridge)
             peoplePositions = {}
@@ -282,88 +299,101 @@ class PerceptionNode(Node):
             return None
         return self.depthImagesByStamp[nearestDepthSeconds]
 
-    def BuildTrackedPeopleMessage(self, detectedPeople, peoplePositions, imageSeconds, header):
-        trackedPeopleMessage = PerceptionTrackedPersonArray()
-        trackedPeopleMessage.header = header
-        for detectedPerson in detectedPeople:
-            trackedPerson = PerceptionTrackedPerson()
-            trackedPerson.id = detectedPerson.trackId
-            trackedPerson.confidence = detectedPerson.confidence
-            trackedPerson.x_min = detectedPerson.left
-            trackedPerson.y_min = detectedPerson.top
-            trackedPerson.x_max = detectedPerson.right
-            trackedPerson.y_max = detectedPerson.bottom
-            trackedPerson.is_leader = detectedPerson.trackId == self.leaderManager.visibleLeaderTrackId
-            trackedPerson.reid_distance = self.leaderManager.GetRecentDistance(detectedPerson.trackId, imageSeconds)
-            personPosition = peoplePositions.get(detectedPerson.trackId)
-            trackedPerson.position_valid = personPosition is not None
-            if personPosition is not None:
-                trackedPerson.position = personPosition.position
-            trackedPeopleMessage.people.append(trackedPerson)
-        return trackedPeopleMessage
+    def RememberLeaderPosition(self, leaderPosition, leaderClosestPoint, imageSeconds):
+        self.lastLeaderPosition = leaderPosition.position
+        self.lastKnownLeaderPoint = leaderClosestPoint
+        self.lastKnownLeaderSeconds = imageSeconds
+        self.lastKnownLeaderUncertainty = EstimatePositionUncertainty(leaderPosition, self.obstacleSettings)
 
-    def BuildLeaderStateMessage(self, imageSeconds, header, leaderPosition):
-        leaderStateMessage = PerceptionLeaderState()
-        leaderStateMessage.header = header
-        leaderStateMessage.state = self.leaderManager.state
-        leaderStateMessage.track_id = self.leaderManager.visibleLeaderTrackId
-        leaderStateMessage.leader_visible = self.leaderManager.visibleLeaderTrackId != NO_TRACK_ID
-        leaderStateMessage.seconds_since_seen = self.CalculateSecondsSinceSeen(imageSeconds)
-        leaderStateMessage.distance = math.nan
-        leaderStateMessage.angle = math.nan
-        for point in (leaderStateMessage.position, leaderStateMessage.last_seen_position, leaderStateMessage.velocity):
-            point.x = point.y = point.z = math.nan
-        if leaderPosition is not None:
-            leaderStateMessage.position = leaderPosition.position
-            leaderStateMessage.distance, leaderStateMessage.angle = CalculateDistanceAndAngle(leaderPosition.position)
-        if self.lastLeaderPosition is not None:
-            leaderStateMessage.last_seen_position = self.lastLeaderPosition
-        leaderStateMessage.velocity_valid = False
-        leaderStateMessage.velocity_compensated = False
-        storedViewCounts = self.leaderManager.CountStoredViews()
-        leaderStateMessage.front_views = storedViewCounts[FRONT_GROUP]
-        leaderStateMessage.back_views = storedViewCounts[BACK_GROUP]
-        leaderStateMessage.side_left_views = storedViewCounts[SIDE_LEFT_GROUP]
-        leaderStateMessage.side_right_views = storedViewCounts[SIDE_RIGHT_GROUP]
-        leaderStateMessage.partly_hidden_views = storedViewCounts[PARTLY_HIDDEN_GROUP]
-        return leaderStateMessage
+    def ForgetLeaderPosition(self):
+        self.lastLeaderPosition = None
+        self.lastKnownLeaderPoint = None
 
-    def BuildObstaclesMessage(self, detectedPeople, peoplePositions, header):
-        obstaclesMessage = PerceptionObstacleArray()
-        obstaclesMessage.header = header
-        obstaclesMessage.lidar_used = False
-        for person in detectedPeople:
-            personPosition = peoplePositions.get(person.trackId)
-            if personPosition is None or person.trackId == self.leaderManager.visibleLeaderTrackId:
-                continue
-            obstacle = PerceptionObstacle()
-            obstacle.id = person.trackId
-            obstacle.kind = PerceptionObstacle.DYNAMIC
-            obstacle.source = PerceptionObstacle.SOURCE_CAMERA
-            obstacle.class_name = PERSON_CLASS_NAME
-            obstacle.position = personPosition.position
-            obstacle.size.x = obstacle.size.y = personPosition.width
-            obstacle.size.z = personPosition.height
-            obstacle.position_uncertainty = personPosition.uncertainty
-            obstacle.velocity.x = obstacle.velocity.y = obstacle.velocity.z = math.nan
-            obstacle.velocity_valid = False
-            obstacle.velocity_compensated = False
-            obstaclesMessage.obstacles.append(obstacle)
-        return obstaclesMessage
+    def BuildLeaderMessage(self, leaderClosestPoint, imageSeconds, header):
+        leaderMessage = PerceptionLeader()
+        leaderMessage.header = header
+        leaderMessage.status = self.FindLeaderStatus()
+        leaderMessage.closest_point = leaderClosestPoint if leaderClosestPoint is not None else MakeUnknownPoint()
+        leaderMessage.velocity_uncertainty = UNKNOWN_VELOCITY_UNCERTAINTY
+        leaderMessage.lost_duration = self.CalculateSecondsSinceSeen(imageSeconds)
+        leaderMessage.last_known_point = MakeUnknownPoint()
+        leaderMessage.position_uncertainty = math.nan
+        if self.lastKnownLeaderPoint is not None:
+            leaderMessage.last_known_point = self.lastKnownLeaderPoint
+            pointAgeSeconds = max(0.0, imageSeconds - self.lastKnownLeaderSeconds)
+            leaderMessage.position_uncertainty = self.lastKnownLeaderUncertainty + UNKNOWN_VELOCITY_UNCERTAINTY * pointAgeSeconds
+        return leaderMessage
+
+    def FindLeaderStatus(self):
+        if self.leaderManager.state in (IDLE_STATE, ENROLLING_STATE):
+            return PerceptionLeader.NO_LEADER
+        if self.leaderManager.visibleLeaderTrackId != NO_TRACK_ID:
+            return PerceptionLeader.VISIBLE
+        return PerceptionLeader.LOST
 
     def CalculateSecondsSinceSeen(self, imageSeconds):
         if self.leaderManager.lastSeenSeconds == 0.0:
             return math.nan
         return max(0.0, imageSeconds - self.leaderManager.lastSeenSeconds)
 
-    def BuildFrameStatsMessage(self, detectorTimeMilliseconds, peopleCount, header):
-        frameStatsMessage = PerceptionFrameStats()
-        frameStatsMessage.header = header
-        frameStatsMessage.detector_time_ms = detectorTimeMilliseconds
-        frameStatsMessage.reid_time_ms = self.reidSecondsInFrame * 1000.0
-        frameStatsMessage.reid_crop_count = self.reidCropCountInFrame
-        frameStatsMessage.people_count = peopleCount
-        return frameStatsMessage
+    def BuildObstaclesMessage(self, detectedPeople, peoplePositions, peopleCircles, leaderClosestPoint, header):
+        lineOfSightEnd = leaderClosestPoint if leaderClosestPoint is not None else self.lastKnownLeaderPoint
+        obstaclesMessage = PerceptionObstacleArray()
+        obstaclesMessage.header = header
+        for person in detectedPeople:
+            personPosition = peoplePositions.get(person.trackId)
+            if personPosition is None or person.trackId == self.leaderManager.visibleLeaderTrackId:
+                continue
+            personCircle = peopleCircles[person.trackId]
+            obstacle = PerceptionObstacle()
+            obstacle.closest_point = FindClosestPointToRobot(personCircle)
+            obstacle.line_of_sight_point = MakeUnknownPoint()
+            if lineOfSightEnd is not None:
+                obstacle.line_of_sight_point = FindClosestPointToLine(personCircle, self.cameraPosition, lineOfSightEnd)
+            obstacle.position_uncertainty = EstimatePositionUncertainty(personPosition, self.obstacleSettings)
+            obstacle.velocity_uncertainty = UNKNOWN_VELOCITY_UNCERTAINTY
+            obstaclesMessage.obstacles.append(obstacle)
+        return obstaclesMessage
+
+    def BuildDebugFrameMessage(self, detectedPeople, peoplePositions, leaderPosition, detectorTimeMilliseconds,
+                               imageSeconds, header):
+        debugFrameMessage = PerceptionDebugFrame()
+        debugFrameMessage.header = header
+        debugFrameMessage.leader_state = self.leaderManager.state
+        debugFrameMessage.leader_track_id = self.leaderManager.visibleLeaderTrackId
+        debugFrameMessage.seconds_since_seen = self.CalculateSecondsSinceSeen(imageSeconds)
+        debugFrameMessage.leader_distance = math.nan
+        if leaderPosition is not None:
+            debugFrameMessage.leader_distance = CalculateHorizontalDistance(leaderPosition.position)
+        debugFrameMessage.last_seen_position = MakeUnknownPoint()
+        if self.lastLeaderPosition is not None:
+            debugFrameMessage.last_seen_position = self.lastLeaderPosition
+        storedViewCounts = self.leaderManager.CountStoredViews()
+        debugFrameMessage.front_views = storedViewCounts[FRONT_GROUP]
+        debugFrameMessage.back_views = storedViewCounts[BACK_GROUP]
+        debugFrameMessage.side_left_views = storedViewCounts[SIDE_LEFT_GROUP]
+        debugFrameMessage.side_right_views = storedViewCounts[SIDE_RIGHT_GROUP]
+        debugFrameMessage.partly_hidden_views = storedViewCounts[PARTLY_HIDDEN_GROUP]
+        debugFrameMessage.detector_time_ms = detectorTimeMilliseconds
+        debugFrameMessage.reid_time_ms = self.reidSecondsInFrame * 1000.0
+        debugFrameMessage.reid_crop_count = self.reidCropCountInFrame
+        debugFrameMessage.people_count = len(detectedPeople)
+        for detectedPerson in detectedPeople:
+            debugPerson = PerceptionDebugPerson()
+            debugPerson.id = detectedPerson.trackId
+            debugPerson.confidence = detectedPerson.confidence
+            debugPerson.x_min = detectedPerson.left
+            debugPerson.y_min = detectedPerson.top
+            debugPerson.x_max = detectedPerson.right
+            debugPerson.y_max = detectedPerson.bottom
+            debugPerson.is_leader = detectedPerson.trackId == self.leaderManager.visibleLeaderTrackId
+            debugPerson.reid_distance = self.leaderManager.GetRecentDistance(detectedPerson.trackId, imageSeconds)
+            personPosition = peoplePositions.get(detectedPerson.trackId)
+            debugPerson.position_valid = personPosition is not None
+            if personPosition is not None:
+                debugPerson.position = personPosition.position
+            debugFrameMessage.people.append(debugPerson)
+        return debugFrameMessage
 
     def FindPersonNearestImageCenter(self):
         imageCenterX = self.latestImageWidth / 2

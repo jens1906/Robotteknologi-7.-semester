@@ -1,7 +1,7 @@
 """Who is the leader: enrolment, the stored views, finding them again, lost / last seen. Plain python, no ROS.
 
 To include:
-- States: IDLE, ENROLLING, FOLLOWING, SEARCHING, LOST (the values in PerceptionLeaderState).
+- States: IDLE, ENROLLING, FOLLOWING, SEARCHING, LOST (the values of leader_state in PerceptionDebugFrame).
 - The leader is described by stored views in five groups: front, back, side left, side right and partly
   hidden (body_view.py decides the group from the keypoints). At most viewsPerGroup views per group.
 - Enrolment (calibrate service): the leader turns around once; up to enrollViewsPerDirection clean views
@@ -67,7 +67,7 @@ LEADER_SETTING_DEFAULTS = {
     **BODY_VIEW_SETTING_DEFAULTS,
 }
 
-# Leader states (the same numbers as PerceptionLeaderState)
+# Leader states (the same numbers as leader_state in PerceptionDebugFrame)
 IDLE_STATE = 0
 ENROLLING_STATE = 1
 FOLLOWING_STATE = 2
