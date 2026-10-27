@@ -175,6 +175,25 @@ TESTING AGAINST THE REAL ROBOT
   Recording a new bag on the robot adds a new reference: pass its directory.
 
 
+DRIVING FROM follow_anywhere_ws
+  The sim_bridge node (started by the launch file) converts Unitree sport
+  requests on /api/sport/request (unitree_api/msg/Request) to /cmd_vel:
+    1008 Move -> Twist,  1003 StopMove -> zero,  1004/1005/1006 stand -> ignored
+  Motion stops if no Move arrives for 0.5 s (parameter cmd_timeout).
+
+  With the sim running, on the host:
+    cd follow_anywhere_ws && source install/setup.bash
+    export ROS_DOMAIN_ID=0
+    ros2 run manual_controller keyboard_teleop
+  Do NOT use scripts/drive_go2.sh here: it binds CycloneDDS to the robot NIC.
+  If the host doesn't see the sim topics, use the same RMW_IMPLEMENTATION on
+  both sides (unset it on the host, or set it in docker-compose.yml).
+
+  Test without the host (inside the container):
+    ros2 topic pub -r 10 /api/sport/request unitree_api/msg/Request \
+      "{header: {identity: {api_id: 1008}}, parameter: '{\"x\": 0.3, \"y\": 0.0, \"z\": 0.0}'}"
+
+
 REBUILD AFTER CODE CHANGES
   docker compose up --build
 

@@ -1,0 +1,25 @@
+# BoT-SORT (motion + camera-motion compensation, no appearance model) for the person detector.
+# Settings carried over from the KPR/OSNet tests (commit b6ff4c4, botsort_tuned.yaml), where they
+# were scored against MOT17 ground truth: better than ByteTrack and better than using the YOLO
+# detector's features as appearance (that one linked the wrong people, ~3x the ID switches).
+#
+# Frames here are PROCESSED frames: when the detector is slower than the camera, frames are dropped.
+
+tracker_type: botsort
+track_high_thresh: 0.25     # first-stage match threshold
+track_low_thresh: 0.1       # second-stage threshold (recovers weak boxes of partly hidden people)
+new_track_thresh: 0.4       # was 0.25: fewer spurious tracks, each of which burns an ID
+track_buffer: 30            # processed frames a lost track is kept
+match_thresh: 0.8
+fuse_score: True
+
+# Camera motion compensation. The Go2 camera moves and shakes; on the static test sequences it made
+# no difference, on the moving ones it was neutral, and it costs ~1 fps.
+gmc_method: sparseOptFlow
+
+# Appearance matching is OFF. With the YOLO detector's own features it hurt (more ID switches); the
+# leader is re-identified by reid_model.py instead.
+with_reid: False
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+model: auto

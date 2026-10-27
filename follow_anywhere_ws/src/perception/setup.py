@@ -1,6 +1,8 @@
+from glob import glob
+
 from setuptools import find_packages, setup
 
-package_name = 'vision'
+package_name = 'perception'
 
 setup(
     name=package_name,
@@ -10,12 +12,15 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
+        ('share/' + package_name + '/config', glob('config/*.yaml')),
+        ('share/' + package_name + '/models', glob('resource/models/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='jens',
     maintainer_email='jens1906@gmail.com',
-    description='TODO: Package description',
+    description='Leader identification, people tracking and obstacles for the follow-anywhere Go2',
     license='TODO: License declaration',
     extras_require={
         'test': [
@@ -24,6 +29,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            # perception_node.main does not exist yet: `ros2 run` / the launch file fail until it is written
+            'perception_node = perception.perception_node:main',
         ],
     },
 )

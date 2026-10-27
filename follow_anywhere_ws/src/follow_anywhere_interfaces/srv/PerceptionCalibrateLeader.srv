@@ -1,0 +1,7 @@
+# Make a person the leader (start enrolment). Offered by the perception node, called by the viewer
+# (click), the terminal or later a remote-control button.
+#   ros2 service call /perception/calibrate_leader follow_anywhere_interfaces/srv/PerceptionCalibrateLeader "{track_id: -1}"
+int32 track_id      # tracker id of the person to enrol; -1 = the person nearest the image centre
+---
+bool success        # false: nobody with that id / nobody in view
+string message      # e.g. "enrolling #7", "nobody there"

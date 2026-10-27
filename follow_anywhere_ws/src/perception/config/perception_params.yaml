@@ -1,0 +1,69 @@
+# Parameters of the perception node. Loaded by launch/perception.launch.py (paramsFile:=... to use another).
+# Frames: everything published is in base_link (x forward, y left, z up). Units: m, s, rad.
+# Topic names are not parameters: they are written in perception_node.py (change them with a remapping in the launch file).
+perception_node:
+  ros__parameters:
+    baseFrame: base_link
+
+    # --- switches -------------------------------------------------------------------------------
+    useLidar: true           # lidar for static obstacles; falls back to the depth image when no cloud arrives
+    useOdometry: false       # true: remove the robot's own motion from velocities (velocity_compensated)
+    useVelocity: false       # false: velocities are published as NaN with velocity_valid = false
+
+    # --- person detector + tracker --------------------------------------------------------------
+    detectorModelFile: yolov8n-pose.pt       # in resource/models/ (scripts/fetch_models.py); pose model: keypoints for depth sampling
+    detectorImageSize: 640                   # the camera's own resolution; 960 was ~2x slower on CPU
+    minimumBoxSizePixels: 24                 # px, smaller detections are ignored
+    trackerConfigFile: botsort.yaml          # in this package's config/
+    requestedDevice: auto                    # auto / cuda / cpu, for the detector and OSNet; auto warns loudly when it falls back to CPU
+
+    # --- re-identification (OSNet) --------------------------------------------------------------
+    reidModelFile: osnet.onnx                # in resource/models/ (scripts/fetch_models.py)
+    reidThreads: 2                           # CPU threads for OSNet (leaves cores for the detector)
+    leaderFile: ~/.ros/follow_anywhere/perception_leader.npz   # saved leader, always loaded at start; deleted by /perception/clear_leader
+
+    # --- leader. Origin of each value: MEASURED = from MOT17 street video (static camera), CHOSEN = picked after a failure
+    # --- there, GUESS = engineering judgement, never tuned. NONE of them were tuned on the Go2 / RealSense yet.
+    reidAccept: 0.45                         # MEASURED: distance below which a person can be the leader (lets ~0.2% of other people through per comparison)
+    reidDrop: 0.82                           # MEASURED: distance above which the followed person looks wrong (above 99% of true views)
+    reidMargin: 0.05                         # CHOSEN: lead the best candidate needs over the second best (after a wrong person got through)
+    reidConfirm: 3                           # CHOSEN: wins needed ... (frames in a row are correlated, so not "in a row")
+    reidConfirmWindow: 6                     # CHOSEN: ... in a candidate's last comparisons
+    verifyPeriod: 0.2                        # s between OSNet checks of the followed person; was 1.0, 0 = every frame. ~14 ms per check on CPU
+    searchPeriod: 0.3                        # GUESS: s between searches
+    searchCandidates: 4                      # GUESS: people compared per search
+    averageViews: 5                          # GUESS: a candidate's last views averaged before comparing (one photo is noisy)
+    enrollViewsPerDirection: 3               # GUESS: calibration views per facing direction (front, back, side left, side right), the permanent anchors
+    enrollMinimumDirections: 1               # GUESS: directions that must be filled to finish after enrollDuration (1 = a calibration without turning still works)
+    enrollGap: 0.4                           # GUESS: s between two stored views, so they differ a little
+    enrollDuration: 8.0                      # GUESS: s the leader has to turn around; enrolment ends earlier when all four directions are filled
+    enrollTimeout: 20.0                      # GUESS: s before an unfinished enrolment is given up
+    enrollGraceTime: 2.0                     # CHOSEN: s the person being enrolled may be missing (the tracker drops boxes for a few frames now and then)
+    enrollRebindIou: 0.6                     # GUESS: a new track this much on the enrolled person's last box is the same person (track id change)
+    viewsPerGroup: 6                         # GUESS: stored views per group (front, back, side left, side right, partly hidden), calibration + learned
+    noveltyDistance: 0.25                    # GUESS: a view closer than this to a stored one of its group is not stored again
+    trustTime: 3.0                           # GUESS: s after a strong match (below reidAccept) on the same unbroken track in which views are learned
+    keypointConfidence: 0.5                  # GUESS: keypoint confidence above which a body point counts as visible
+    sideRatio: 0.35                          # GUESS: shoulder width below this share of the torso height = seen from the side
+    edgeMarginPixels: 8                      # GUESS: px, a box this close to the left/right image edge is cut off: not compared, not learned
+    minimumCropHeightPixels: 96              # GUESS: px, smaller people are not compared or learned (OSNet input is 256 px high)
+    graceTime: 1.0                           # CHOSEN: s the followed person may be missing (flicker) before searching
+    lostTime: 10.0                           # NEW, untested: s of searching before the state becomes LOST
+    crossingIou: 0.15                        # GUESS: another person's box this much over the leader's: OSNet cannot tell them apart, the lock is dropped
+    competitorAge: 3.0                       # GUESS: s a visible person's latest distance still counts as a competitor
+    loseAfterChecks: 2                       # GUESS: checks in a row that say "different person" before the leader is dropped
+    recentDistanceTime: 2.0                  # NEW, untested: s a distance stays printed under a box
+
+    # --- 3D position + Kalman filter ------------------------------------------------------------
+    depthMin: 0.3                            # m, depth outside this range is not used
+    depthMax: 8.0
+    depthPatchPixels: 3                      # GUESS: px around each torso keypoint whose depth is used (3 = 7x7 patch)
+    minimumDepthSamples: 5                   # GUESS: valid depth pixels needed, else the middle strip of the box, else no position
+    minimumValidDepthShare: 0.3              # GUESS: share of the sampled pixels with usable depth, below = no position (person closer than depthMin)
+    kalmanProcessNoise: 1.0                  # placeholder, tune: how fast velocities may change (m/s^2)
+    kalmanMeasurementNoise: 0.1              # placeholder, tune: position noise of one measurement (m)
+    trackTimeout: 1.0                        # s without measurement before a filter is dropped
+
+    # --- obstacles ------------------------------------------------------------------------------
+    obstacleMaxRange: 6.0                    # m, farther points are ignored
+    groundHeight: 0.05                       # m above the ground plane that counts as ground

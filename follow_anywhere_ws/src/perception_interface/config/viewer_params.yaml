@@ -1,0 +1,13 @@
+# Parameters of the perception viewer (runs on the laptop). Loaded by launch/viewer.launch.py.
+# Topic names are not parameters: they are written in perception_viewer.py (change them with a remapping in the launch file).
+# The image topic there is the COMPRESSED one: a raw 640x480 colour image at 30 fps is ~27 MB/s over WiFi, the JPEG ~1-2 MB/s.
+perception_viewer:
+  ros__parameters:
+    exactMode: true           # true: only images that have a perception result, boxes exactly on people.
+                              # false: every image with the newest boxes (smooth, boxes trail a little).
+                              # Key 'm' switches while running.
+    imageBufferSize: 30       # images kept to find the one with the same timestamp as a result (~1 s at 30 fps)
+    windowWidth: 960          # px
+    showDistances: true       # reid distance and metres under each box
+    showMap: true             # top-down map in the bottom right corner (people placed by depth, seen from the ceiling)
+    mapRangeMeters: 5.0       # m ahead of the robot the map shows

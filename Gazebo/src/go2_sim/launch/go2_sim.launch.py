@@ -194,6 +194,16 @@ def generate_launch_description():
         ]
     ]
 
+    # 8. sim_bridge — converts /api/sport/request (unitree_api) → /cmd_vel,
+    #    so code written for the physical Go2 drives the sim unchanged
+    sport_bridge = Node(
+        package='sim_bridge',
+        executable='sport_request_bridge',
+        name='sim_bridge',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time}],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true',
                               description='Use simulation clock'),
