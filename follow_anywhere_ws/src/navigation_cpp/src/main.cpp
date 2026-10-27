@@ -13,12 +13,14 @@
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
 
-#include "perception_msgs/msg/detection_array.hpp"
+#include "follow_anywhere_interfaces/msg/perception_leader.hpp"
+#include "follow_anywhere_interfaces/msg/perception_obstacle_array.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "unitree_api/msg/request.hpp"
 
-using perception_msgs::msg::Detection;
-using perception_msgs::msg::DetectionArray;
+using follow_anywhere_interfaces::msg::PerceptionLeader;
+using follow_anywhere_interfaces::msg::PerceptionObstacle;
+using follow_anywhere_interfaces::msg::PerceptionObstacleArray;
 using std::chrono::duration;
 using std::chrono::steady_clock;
 using unitree_api::msg::Request;
@@ -41,8 +43,6 @@ OSQPCscMatrix to_csc(SpMat &M) {
 
 constexpr int API_STOP_MOVE = 1003;
 constexpr int API_MOVE = 1008;
-
-constexpr int CLASS_LEADER = Detection::CLASS_LEADER;
 
 static double time_now() {
   return duration<double>(steady_clock::now().time_since_epoch()).count();
@@ -77,15 +77,21 @@ struct Obstacle {
   double spd = 0.0;            // speed of the obstacle
 };
 
-Obstacle from_detection(const Detection &detection) {
+struct Leader {
+  double range = 0.0;   // to the closest point of the leader
+  double bearing = 0.0; // rad, counter-clockwise from +x of base_link
+  geometry_msgs::msg::Vector3 velocity;
+  double velocity_std = 0.0;
+};
+
+Obstacle from_obstacle(const PerceptionObstacle &obstacle) {
   Obstacle obs;
-  obs.pol = Eigen::Vector2d(detection.range, detection.bearing);
-  obs.pos = Eigen::Vector2d(detection.range * std::cos(detection.bearing),
-                            detection.range * std::sin(detection.bearing));
-  obs.vel = Eigen::Vector2d(detection.velocity.x, detection.velocity.y);
-  obs.std = detection.velocity_std;
+  obs.pos = Eigen::Vector2d(obstacle.closest_point.x, obstacle.closest_point.y);
+  obs.pol = Eigen::Vector2d(obs.pos.norm(), std::atan2(obs.pos.y(), obs.pos.x()));
+  obs.vel = Eigen::Vector2d(obstacle.velocity.x, obstacle.velocity.y);
+  obs.std = obstacle.velocity_uncertainty;
   obs.spd = obs.vel.norm();
-  if (obs.vel.norm() < detection.velocity_std * 2.0) {
+  if (obs.vel.norm() < obstacle.velocity_uncertainty * 2.0) {
     obs.vel = Eigen::Vector2d::Zero();
   }
   return obs;
@@ -95,14 +101,13 @@ struct ObstacleList {
   std::array<Obstacle, MAX_OBSTACLES> obstacles;
   int size = 0;
   void clear() { size = 0; }
-  void fill_from_detections(const DetectionArray &detections,
-                            std::array<uint8_t, MAX_OBSTACLES> order) {
+  void fill_from_obstacles(const PerceptionObstacleArray &msg,
+                           std::array<uint8_t, MAX_OBSTACLES> order) {
     clear();
-    for (int i = 0; i < detections.detections.size() && i < MAX_OBSTACLES;
-         ++i) {
+    for (size_t i = 0; i < msg.obstacles.size() && i < MAX_OBSTACLES; ++i) {
       if (order[i] == 255)
         break;
-      obstacles[i] = from_detection(detections.detections[order[i]]);
+      obstacles[i] = from_obstacle(msg.obstacles[order[i]]);
       size++;
     }
   }
@@ -111,9 +116,8 @@ struct ObstacleList {
 class LeaderFollower : public rclcpp::Node {
 private:
   bool has_leader = false;
-  uint32_t leader_id = 0;
   double last_seen = 0.0;
-  Detection leader;
+  Leader leader;
 
   bool last_path_valid = false;
   Eigen::Matrix<double, 3, PREDICTION_HORIZON> last_path;
@@ -127,7 +131,8 @@ private:
   double dt;
   rclcpp::TimerBase::SharedPtr timer;
   rclcpp::Publisher<Request>::SharedPtr pub;
-  rclcpp::Subscription<DetectionArray>::SharedPtr sub;
+  rclcpp::Subscription<PerceptionLeader>::SharedPtr leader_sub;
+  rclcpp::Subscription<PerceptionObstacleArray>::SharedPtr obstacles_sub;
 
   std::vector<Triplet> A_c, P_c;
   std::vector<OSQPFloat> l, u, q;
@@ -138,10 +143,15 @@ public:
   LeaderFollower() : Node("leader_follower") {
     // Initialize parameters
     pub = create_publisher<Request>("/api/sport/request", 10);
-    sub = create_subscription<DetectionArray>(
-        "/perception/detections", 10,
-        [this](const DetectionArray::SharedPtr msg) {
-          this->detections_callback(msg);
+    leader_sub = create_subscription<PerceptionLeader>(
+        "/perception/leader", 10,
+        [this](const PerceptionLeader::SharedPtr msg) {
+          this->leader_callback(msg);
+        });
+    obstacles_sub = create_subscription<PerceptionObstacleArray>(
+        "/perception/obstacles", 10,
+        [this](const PerceptionObstacleArray::SharedPtr msg) {
+          this->obstacles_callback(msg);
         });
     const double rate = declare_parameter("rate", 10.0);
     dt = 1.0 / rate;
@@ -161,46 +171,49 @@ public:
       osqp_cleanup(solver);
   }
 
-  void detections_callback(const DetectionArray::SharedPtr msg) {
-    const double now = time_now();
+  void leader_callback(const PerceptionLeader::SharedPtr msg) {
+    const auto &p = msg->closest_point;
+    if (msg->status != PerceptionLeader::VISIBLE || !std::isfinite(p.x) ||
+        !std::isfinite(p.y))
+      return;
+    leader.range = std::hypot(p.x, p.y);
+    leader.bearing = std::atan2(p.y, p.x);
+    leader.velocity = msg->velocity;
+    leader.velocity_std = msg->velocity_uncertainty;
+    has_leader = true;
+    last_seen = time_now();
+  }
 
+  void obstacles_callback(const PerceptionObstacleArray::SharedPtr msg) {
     std::array<uint8_t, MAX_OBSTACLES> d_order;
     std::array<double, MAX_OBSTACLES> d_distances;
 
     int count = 0;
-    for (size_t i = 0; i < msg->detections.size(); ++i) {
-      const Detection &det = msg->detections[i];
+    for (size_t i = 0; i < msg->obstacles.size(); ++i) {
+      const PerceptionObstacle &obstacle = msg->obstacles[i];
+      if (!std::isfinite(obstacle.closest_point.x) ||
+          !std::isfinite(obstacle.closest_point.y))
+        continue;
+      Obstacle o = from_obstacle(obstacle);
+      double dist = std::hypot(o.pos.x(), o.pos.y());
 
-      if (det.class_id == CLASS_LEADER) {
-        has_leader = true;
-        leader_id = det.id;
-        leader = det;
-        last_seen = now;
-      } else if (has_leader && det.id == leader_id) {
-        leader = det;
-        last_seen = now;
-      } else {
-        Obstacle o = from_detection(det);
-        double dist = std::hypot(o.pos.x(), o.pos.y());
+      // find sorted insertion point
+      int k = count;
+      while (k > 0 && d_distances[k - 1] > dist)
+        --k;
+      if (k >= MAX_OBSTACLES)
+        continue; // farther than everything kept
 
-        // find sorted insertion point
-        int k = count;
-        while (k > 0 && d_distances[k - 1] > dist)
-          --k;
-        if (k >= MAX_OBSTACLES)
-          continue; // farther than everything kept
-
-        // shift [k, last) right by one; drops the farthest when full
-        int last = std::min(count, MAX_OBSTACLES - 1);
-        std::copy_backward(d_distances.begin() + k, d_distances.begin() + last,
-                           d_distances.begin() + last + 1);
-        std::copy_backward(d_order.begin() + k, d_order.begin() + last,
-                           d_order.begin() + last + 1);
-        d_distances[k] = dist;
-        d_order[k] = i;
-        if (count < MAX_OBSTACLES)
-          ++count;
-      }
+      // shift [k, last) right by one; drops the farthest when full
+      int last = std::min(count, MAX_OBSTACLES - 1);
+      std::copy_backward(d_distances.begin() + k, d_distances.begin() + last,
+                         d_distances.begin() + last + 1);
+      std::copy_backward(d_order.begin() + k, d_order.begin() + last,
+                         d_order.begin() + last + 1);
+      d_distances[k] = dist;
+      d_order[k] = i;
+      if (count < MAX_OBSTACLES)
+        ++count;
     }
 
     for (int j = count; j < MAX_OBSTACLES; ++j) {
@@ -208,7 +221,7 @@ public:
       d_distances[j] = std::numeric_limits<double>::infinity();
     }
 
-    obstacles.fill_from_detections(*msg, d_order);
+    obstacles.fill_from_obstacles(*msg, d_order);
   }
 
   void timer_callback() {

@@ -8,7 +8,7 @@
   <license>BSD-3-Clause</license>
 
   <depend>rclpy</depend>
-  <depend>perception_msgs</depend>
+  <depend>follow_anywhere_interfaces</depend>
   <depend>sensor_msgs</depend>
   <depend>unitree_api</depend>
 
