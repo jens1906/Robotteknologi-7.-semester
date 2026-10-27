@@ -55,3 +55,9 @@ qtcreator-*
 # Catkin custom files
 CATKIN_IGNORE
 
+*.md
+*.tar
+*.data
+*.onnx
+*.pt
+
