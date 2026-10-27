@@ -3,7 +3,7 @@
   <name>go2_sim</name>
   <version>0.1.0</version>
   <description>
-    Launch files, world SDF, and ros_gz_bridge config for the Unitree Go2
+    Launch files and ros_gz_bridge config for the Unitree Go2
     Gazebo Jetty simulation. Orchestrates all nodes and the bridge between
     Gazebo sensor topics and physical-robot-matching ROS2 topic names.
   </description>
@@ -19,8 +19,9 @@
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>go2_description</exec_depend>
-  <exec_depend>go2_hw_bridge</exec_depend>
-  <exec_depend>sim_bridge</exec_depend>
+  <exec_depend>go2_robot_emulator</exec_depend>
+  <exec_depend>go2_scenarios</exec_depend>
+  <exec_depend>ros_gz_interfaces</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

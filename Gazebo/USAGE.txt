@@ -2,10 +2,13 @@ Go2 Gazebo Simulation — Usage Guide
 ======================================
 
 WHAT THIS IS
-  Unitree Go2 simulation in Gazebo Jetty + ROS2 Lyrical.
-  - Walking control via /cmd_vel (same interface as real robot with community SDKs)
-  - Full sensor suite: Hesai XT16 LiDAR, 5x depth cameras, fisheye, IMU
-  - Unitree custom message types: /lowstate (unitree_go/msg/LowState)
+  Unitree Go2 simulation in Gazebo Jetty + ROS2 Lyrical that presents the same
+  ROS interface as the physical Go2, so robot code runs on it unchanged.
+  The reference is a bag recorded on the robot: go2_all_topics_6_10_11_28/.
+  - Sensors on the real robot: Unitree L1 lidar (+ its IMU), head camera,
+    body IMU, plus the front RealSense D455 (on the robot, not in that bag)
+  - Same topic names, message types/layouts, frame ids and rates as the robot
+  - Driven through the sport API (/api/sport/request), like the robot
 
 MODEL SOURCE
   URDF and meshes from official Unitree repository:
@@ -40,63 +43,136 @@ RUN
 
 
 EXPECTED STARTUP SEQUENCE
-  1. Gazebo Jetty window opens (empty world)
+  1. Gazebo Jetty window opens (empty world unless GO2_WORLD is set, see WORLDS)
   2. Go2 robot spawns in the world at z=0.4m
   3. Robot drops to ground and stands up (CHAMP controller)
-  4. All sensor topics become available after ~5 seconds
+  4. All robot topics become available after ~5 seconds
 
   If the robot falls over on startup: this is normal on first run while
   CHAMP's initial stance phase settles. It self-recovers.
 
 
-CONTROL THE ROBOT
-  In a second terminal (inside the container):
-  docker exec -it <container_name> bash
-  source /ros2_ws/install/setup.sh
+WORLDS
+  Pick a world with GO2_WORLD (default: empty):
+    GO2_WORLD=plaza docker compose up
+  or inside the container: ros2 launch go2_sim go2_sim.launch.py world:=plaza
 
-  # Drive forward at 0.2 m/s:
-  ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
-    '{linear: {x: 0.2, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}' \
-    --rate 10
+  empty        flat ground only (the reference for check_interface/replay)
+  open_field   scattered crates and pillars, 2 pedestrians, 1 cart crossing
+  office       corridor + 2 rooms with doorways and furniture; people pass
+               the leader in the corridor, a cleaning cart, U-turn at the end
+  plaza        fountain, benches, planters; 7 pedestrians crossing and walking
+               right next to the leader (distractors), 2 carts
+  warehouse    shelf rows with 3 m aisles, pallet stacks, 2 forklifts, a worker
 
-  # Keyboard teleop (install teleop_twist_keyboard if not present):
-  ros2 run teleop_twist_keyboard teleop_twist_keyboard
+  Every world but empty has a human leader. It starts 1.5 m in front of the
+  Go2, facing away, waits 15 s (sim time) for the robot to stand up, then walks
+  a fixed loop forever at 0.5 m/s (the Go2's sport API caps at 0.6 m/s).
+  People and movers are scripted, so every run is the same.
 
-  # Stop the robot:
-  ros2 topic pub /cmd_vel geometry_msgs/msg/Twist '{}' --once
+  Ground truth for evaluating the follower (sim-only, like the other /sim/*
+  topics; robot code must not use them). Frame odom (= world, the Go2 spawns
+  at the origin), position on the ground, wall-clock stamps like the robot:
+    /sim/leader/pose   geometry_msgs/PoseStamped   20 Hz sim time
+    /sim/people        geometry_msgs/PoseArray     20 Hz sim time, all people incl. leader
+  (20 Hz of sim time: fewer per wall-clock second when the sim runs slower
+  than real time, e.g. headless on the CPU.)
+  The robot's own ground truth is /sim/odometry.
+
+  Worlds are YAML files in src/go2_scenarios/scenes/; the SDF is generated at
+  launch. To add one, copy a scene, edit it, rebuild, and run with its name.
+  Loading a scene checks it: names are unique, nothing within 1 m of the spawn
+  point, and no person or mover path runs into a static object.
+    static:  box (pose [x, y, yaw], size [x, y, z]), cylinder (radius,
+             length), wall (from [x, y], to [x, y], height, thickness)
+    movers:  box/cylinder moved along path at speed (kinematic, pingpong)
+    people:  walking person along path at speed (mode loop or pingpong,
+             start_delay); the one named "leader" is the leader
+
+  Limitations:
+  - People (Gazebo actors) have no collision: the Go2 walks through them.
+    The lidar, head camera and RealSense do see them.
+  - All people use the same mesh (src/go2_scenarios/models/walk.dae, from
+    Gazebo classic), so the leader looks like everyone else.
+  - At corners people turn over their last 0.25 m and Gazebo rounds the
+    corner slightly, so the ground truth is off by a few cm there.
+  - Movers are moved through /world/go2_world/set_pose at 20 Hz, so they
+    move in small steps, and a robot driving into one does not push it.
 
 
-VERIFY TOPICS
-  ros2 topic list | grep -E "cmd_vel|lowstate|utlidar|camera|imu|clock|odom"
+ROBOT INTERFACE (what robot code sees)
+  go2_robot_emulator turns Gazebo data into these topics. Messages are stamped
+  with wall-clock time, like the robot, and the emulator runs on wall-clock
+  time, so robot code needs no use_sim_time.
 
-  Expected topics include:
-    /cmd_vel
-    /clock
-    /imu/data
-    /joint_states
-    /lowstate
-    /odom
-    /utlidar/cloud
-    /front_camera/color/image_raw
-    /front_camera/depth/image_rect_raw
-    /left_camera/color/image_raw
-    /left_camera/depth/image_rect_raw
-    /right_camera/color/image_raw
-    /right_camera/depth/image_rect_raw
-    /chin_camera/color/image_raw
-    /chin_camera/depth/image_rect_raw
-    /rear_camera/color/image_raw
-    /rear_camera/depth/image_rect_raw
-    /fisheye_camera/image_raw
+  Topic                       Type                          Rate    Frame
+  /lowstate                   unitree_go/LowState           450 Hz
+  /sportmodestate             unitree_go/SportModeState     260 Hz  velocity body-frame
+  /lf/lowstate, /lf/sportmodestate                          18 Hz
+  /utlidar/robot_odom         nav_msgs/Odometry             130 Hz  odom -> base_link
+  /utlidar/robot_pose         geometry_msgs/PoseStamped     17 Hz   odom
+  /utlidar/imu                sensor_msgs/Imu               250 Hz  utlidar_imu
+  /utlidar/cloud              sensor_msgs/PointCloud2       15 Hz   utlidar_lidar, ~4150 pts
+  /utlidar/cloud_base         sensor_msgs/PointCloud2       15 Hz   base_link, robot body removed
+  /utlidar/cloud_deskewed     sensor_msgs/PointCloud2       15 Hz   odom, last 3 frames
+  /utlidar/lidar_state        unitree_go/LidarState         4.5 Hz
+  /frontvideostream           unitree_go/Go2FrontVideoData  2x15 Hz H.264, 360p + 720p
+  /api/sport/response         unitree_api/Response          one per request
+  /camera/camera/color/image_raw (+camera_info)             30 Hz   camera_color_optical_frame
+  /camera/camera/depth/image_rect_raw (+camera_info)        30 Hz   16UC1 mm, camera_depth_optical_frame
 
-  Check rates:
-    ros2 topic hz /utlidar/cloud      # ~10 Hz
-    ros2 topic hz /lowstate           # ~200+ Hz
-    ros2 topic hz /front_camera/color/image_raw  # ~15 Hz
-    ros2 topic hz /imu/data           # ~200 Hz
+  Sport API (/api/sport/request):
+    1008 Move {"x","y","z"}  clamped to 0.6 m/s, 0.4 m/s, 1.6 rad/s
+    1003 StopMove
+    1005 StandDown, 1001 Damp                         lower body, Move ignored
+    1004 StandUp, 1006 RecoveryStand, 1002 BalanceStand   stand
+  Motion stops if no Move arrives for 0.5 s. Every request gets a response.
 
-  Inspect a LowState message:
-    ros2 topic echo /lowstate --once
+  Like the robot, nothing is published on /tf. Robot code gets its TF from
+  follow_anywhere_ws (same launch on the real robot and here):
+    ros2 launch go2_bringup go2_tf.launch.py
+  Sensor mounts live in follow_anywhere_ws/src/go2_bringup/config/go2_mounts.yaml;
+  this URDF reads the same file. The lidar mount was solved from the bag.
+  The D455 position there is an estimate: measure it on the robot.
+
+  Not emulated: /utlidar/height_map_array, /utlidar/range_info,
+  /utlidar/voxel_map_compressed, audio, uwb/vui/obstacles_avoid APIs, /lowcmd,
+  battery/gnss strings. Battery, foot force and temperatures in /lowstate are
+  constants taken from the bag (foot_force is constant on our robot too).
+
+  Sim-internal topics (/sim/*, /cmd_vel, /body_pose, /clock, /sim/tf) are for
+  the sim itself; robot code should not use them.
+
+
+DRIVING FROM follow_anywhere_ws
+  With the sim running, on the host:
+    cd follow_anywhere_ws && source install/setup.bash
+    export ROS_DOMAIN_ID=0
+    ros2 run manual_controller keyboard_teleop
+  Do NOT use scripts/drive_go2.sh here: it binds CycloneDDS to the robot NIC.
+  If the host doesn't see the sim topics, use the same RMW_IMPLEMENTATION on
+  both sides (unset it on the host, or set it in docker-compose.yml).
+
+  Test without the host (inside the container):
+    ros2 topic pub -r 10 /api/sport/request unitree_api/msg/Request \
+      "{header: {identity: {api_id: 1008}}, parameter: '{\"x\": 0.3, \"y\": 0.0, \"z\": 0.0}'}"
+
+
+TESTING AGAINST THE REAL ROBOT
+  The repo is mounted read-only at /repo in the container. With the sim
+  running, in a second shell inside the container (cd /ros2_ws/tools):
+
+  Does the sim look like the robot? Compares topics, types, rates, frame ids
+  and point cloud layouts with the bag:
+    python3 check_interface.py /repo/go2_all_topics_6_10_11_28
+
+  Does the sim move like the robot? Sends the bag's sport commands to the sim
+  at their original timing and compares velocities with the robot's:
+    python3 replay_commands.py /repo/go2_all_topics_6_10_11_28 --csv /tmp/replay.csv
+  Gait parameters to tune against it: go2_description/config/gait.yaml and
+  sport_api's velocity_gain / response_time (go2_robot_emulator/sport_api.py).
+
+  Recording a new bag on the robot adds a new reference: pass its directory.
 
 
 DRIVING FROM follow_anywhere_ws
@@ -126,18 +202,6 @@ STOP
   Ctrl+C  or  docker compose down
 
 
-REAL ROBOT INTERFACE NOTES
-  On the physical Go2 with a community SDK (e.g. abizovnuralem/go2_ros2_sdk),
-  publishing to /cmd_vel is bridged internally to the sport mode API.
-  The same /cmd_vel commands used here will work on the real robot.
-
-  The /lowstate topic uses unitree_go/msg/LowState — the same message type
-  as the physical robot. Code reading /lowstate will work on both.
-
-  Sensor topics use standard ROS2 types (PointCloud2, Image, Imu) with the
-  same topic names as the physical robot.
-
-
 GPU / NO GPU
   By default the container renders with Mesa: on the Intel/AMD integrated
   GPU via /dev/dri. No NVIDIA GPU or nvidia-container-toolkit is needed.
@@ -149,10 +213,34 @@ GPU / NO GPU
 
   NVIDIA GPU passthrough (faster sensor rendering):
     docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+  Needed on machines whose only GPU is NVIDIA: Mesa can't drive it, so the
+  default falls back to CPU rendering and the sim runs at ~0.2-0.3x real time
+  (controller_manager then warns "No clock received"). With the GPU it runs
+  at ~0.95x, also with people in the world.
+
+  One-time host setup (Arch shown; other distros: install
+  nvidia-container-toolkit from NVIDIA's repo):
+    sudo pacman -S nvidia-container-toolkit
+    sudo nvidia-ctk runtime configure --runtime=docker
+    sudo systemctl restart docker
+  Rootless Docker (`docker context ls` shows rootless *) instead needs:
+    sudo sed -i 's/^#no-cgroups = false/no-cgroups = true/' \
+        /etc/nvidia-container-runtime/config.toml
+    nvidia-ctk runtime configure --runtime=docker \
+        --config=$HOME/.config/docker/daemon.json
+    systemctl --user restart docker
+  Check: docker run --rm --gpus all ubuntu nvidia-smi   (lists the GPU)
 
 
 KNOWN LIMITATIONS
   - Gait quality differs from the physical robot (CHAMP open-source vs Unitree firmware)
   - Camera positions are approximate (verify against physical Go2 CAD for precise TF)
-  - RGBD depth output is 32-bit float (32FC1); real RealSense outputs 16-bit (16UC1)
-  - /lowcmd is subscribed but not yet applied (future joint control work)
+  - Lidar points have synthetic intensity (Gazebo has no reflectivity)
+  - Motion vs the robot (tools/replay_commands.py on go2_all_topics_6_10_11_28):
+    distance 8.9 m vs 10.4 m, steady speed and turn rate within ~5%, but CHAMP
+    takes ~0.3 s to reach a new speed where the robot takes ~0.1 s, so short
+    bursts of motion fall short
+  - Startup sometimes hangs with the spawner repeating "waiting for service
+    /controller_manager/switch_controller" (seen once in ~10 starts).
+    Restart the container if the robot is not standing after ~30 s
+  - /lowcmd (joint-level control) is not supported

@@ -13,6 +13,12 @@ follow_anywhere_ws/scripts/drive_go2.sh enx...     # or name it explicitly
 
 The first run builds the workspace. Keys: W/S forward/back, A/D strafe, left/right arrows turn, up/down arrows speed, U stand up, J stand down, R recovery stand, space stop, Q quit. The workspace is documented in [follow_anywhere_ws/README.md](follow_anywhere_ws/README.md).
 
+## Simulation
+
+`Gazebo/` runs a simulated Go2 with the same ROS interface as the real robot (topics, message layouts, frames, rates, sport API), modelled on the bag `go2_all_topics_6_10_11_28/` recorded on the robot. Code from `follow_anywhere_ws` runs against it unchanged. Neither the robot nor the sim publishes `/tf`; start `ros2 launch go2_bringup go2_tf.launch.py` for both. See [Gazebo/USAGE.txt](Gazebo/USAGE.txt), including the tools that check the sim against a robot bag.
+
+`2dSim/` is a lightweight top-down 2D sim of the same worlds for testing the navigation stack without the perception stack. The robot is kinematic, with the same sport API and odometry topics. `fake_perception` publishes noisy detections of the leader, people and obstacles (`perception_msgs`, in polar coordinates around `base_link`, with velocity estimates), limited to a lidar field and a camera field. See [2dSim/USAGE.txt](2dSim/USAGE.txt).
+
 
 
 

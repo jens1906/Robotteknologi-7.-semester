@@ -14,6 +14,8 @@
 
   <depend>xacro</depend>
   <depend>robot_state_publisher</depend>
+  <!-- config/go2_mounts.yaml: sensor mounts shared with the real robot setup -->
+  <exec_depend>go2_bringup</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

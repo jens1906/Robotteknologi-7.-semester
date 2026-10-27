@@ -1,0 +1,13 @@
+# Build context is the repo root; send only what the image uses.
+*
+!Gazebo/Dockerfile
+!Gazebo/src/
+!Gazebo/tools/
+!Gazebo/upstream/champ/champ/
+!Gazebo/upstream/champ/champ_base/
+!Gazebo/upstream/champ/champ_msgs/
+!Gazebo/upstream/unitree_ros/robots/go2_description/
+!follow_anywhere_ws/src/unitree_go/
+!follow_anywhere_ws/src/unitree_api/
+!follow_anywhere_ws/src/go2_bringup/
+**/__pycache__
