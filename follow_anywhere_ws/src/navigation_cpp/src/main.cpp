@@ -67,29 +67,35 @@ struct Command {
 };
 
 struct Obstacle {
-  Eigen::Vector2d pol =
-      Eigen::Vector2d::Zero(); // position in polar coordinates (r, theta)
-  Eigen::Vector2d pos =
-      Eigen::Vector2d::Zero(); // position in Cartesian coordinates (x, y)
-  Eigen::Vector2d vel =
-      Eigen::Vector2d::Zero(); // velocity in Cartesian coordinates (vx, vy)
-  double std = 0.0;            // standard deviation of the obstacle position
+  Eigen::Vector2d near_pol = Eigen::Vector2d::Zero(); // position in polar coordinates (r, theta)
+  Eigen::Vector2d near_pos = Eigen::Vector2d::Zero(); // position in Cartesian coordinates (x, y)
+	Eigen::Vector2d los_pol = Eigen::Vector2d::Zero(); // position in polar coordinates (r, theta)
+	Eigen::Vector2d los_pos = Eigen::Vector2d::Zero(); // position in Cartesian coordinates (x, y)
+  Eigen::Vector2d vel = Eigen::Vector2d::Zero(); // velocity in Cartesian coordinates (vx, vy)
+  double pos_std = 0.0;            // standard deviation of the obstacle position
+	double vel_std = 0.0;
   double spd = 0.0;            // speed of the obstacle
 };
 
 struct Leader {
-  double range = 0.0;   // to the closest point of the leader
-  double bearing = 0.0; // rad, counter-clockwise from +x of base_link
-  geometry_msgs::msg::Vector3 velocity;
-  double velocity_std = 0.0;
+	bool has_leader = false;
+	Eigen::Vector2d pol = Eigen::Vector2d::Zero(); // position in polar coordinates (r, theta)
+	Eigen::Vector2d pos = Eigen::Vector2d::Zero(); // position in Cartesian coordinates (x, y)
+	Eigen::Vector2d vel = Eigen::Vector2d::Zero(); // velocity in Cartesian coordinates (vx, vy)
+	double vel_std = 0.0;   // standard deviation of the leader's velocity
+	double pos_std = 0.0;        // standard deviation of the leader's position
+	double spd = 0.0;            // speed of the leader
 };
 
 Obstacle from_obstacle(const PerceptionObstacle &obstacle) {
   Obstacle obs;
-  obs.pos = Eigen::Vector2d(obstacle.closest_point.x, obstacle.closest_point.y);
-  obs.pol = Eigen::Vector2d(obs.pos.norm(), std::atan2(obs.pos.y(), obs.pos.x()));
+  obs.near_pos = Eigen::Vector2d(obstacle.closest_point.x, obstacle.closest_point.y);
+  obs.near_pol = Eigen::Vector2d(obs.near_pos.norm(), std::atan2(obs.near_pos.y(), obs.near_pos.x()));
+	obs.los_pos = Eigen::Vector2d(obstacle.line_of_sight_point.x, obstacle.line_of_sight_point.y);
+	obs.los_pol = Eigen::Vector2d(obs.los_pos.norm(), std::atan2(obs.los_pos.y(), obs.los_pos.x()));
   obs.vel = Eigen::Vector2d(obstacle.velocity.x, obstacle.velocity.y);
-  obs.std = obstacle.velocity_uncertainty;
+  obs.vel_std = obstacle.velocity_uncertainty;
+	obs.pos_std = obstacle.position_uncertainty;
   obs.spd = obs.vel.norm();
   if (obs.vel.norm() < obstacle.velocity_uncertainty * 2.0) {
     obs.vel = Eigen::Vector2d::Zero();
@@ -115,8 +121,6 @@ struct ObstacleList {
 
 class LeaderFollower : public rclcpp::Node {
 private:
-  bool has_leader = false;
-  double last_seen = 0.0;
   Leader leader;
 
   bool last_path_valid = false;
@@ -159,11 +163,16 @@ public:
                               [this]() { this->timer_callback(); });
 
     constexpr int N = PREDICTION_HORIZON, M = MAX_OBSTACLES;
-    A_c.reserve(3 + N * (18 + 4 * M));
-    P_c.reserve(N * (16 + M)); // no delta = N * (3 + 3 + 1 + M)
-    l.reserve(3 + N * (6 + 2 * M));
-    u.reserve(3 + N * (6 + 2 * M));
-    q.reserve(3 * (N + 1) + 3 * N + M * N);
+		constexpr int QP_VARS = 3 * (N + 1) + 3 * N + 2 * M * N + 2 * N;
+		constexpr int QP_ROWS = 3 + N * (11 + 4 * M);
+		constexpr int QP_A_NNZ = 3 + N * (28 + 8 * M);
+		constexpr int QP_P_NNZ = N * (18 + 2 * M);
+
+    A_c.reserve(QP_A_NNZ);
+    P_c.reserve(QP_P_NNZ);
+    l.reserve(QP_ROWS);
+    u.reserve(QP_ROWS);
+    q.reserve(QP_VARS);
   }
 
   ~LeaderFollower() {
@@ -172,16 +181,25 @@ public:
   }
 
   void leader_callback(const PerceptionLeader::SharedPtr msg) {
-    const auto &p = msg->closest_point;
-    if (msg->status != PerceptionLeader::VISIBLE || !std::isfinite(p.x) ||
-        !std::isfinite(p.y))
-      return;
-    leader.range = std::hypot(p.x, p.y);
-    leader.bearing = std::atan2(p.y, p.x);
-    leader.velocity = msg->velocity;
-    leader.velocity_std = msg->velocity_uncertainty;
-    has_leader = true;
-    last_seen = time_now();
+		Eigen::Vector2d p(msg->closest_point.x, msg->closest_point.y);
+    if (msg->status != PerceptionLeader::VISIBLE || !std::isfinite(p.x()) ||
+        !std::isfinite(p.y())) {
+			leader.has_leader = false;
+			if (msg->lost_duration > 1.0) {
+				last_path_valid = false;
+			}
+			return;
+		}
+		leader.pos = p;
+		leader.pol = Eigen::Vector2d(p.norm(), std::atan2(p.y(), p.x()));
+		leader.vel = Eigen::Vector2d(msg->velocity.x, msg->velocity.y);
+		leader.vel_std = msg->velocity_uncertainty;
+		leader.pos_std = msg->position_uncertainty;
+		leader.spd = leader.vel.norm();
+		if (leader.spd < leader.vel_std * 2.0) {
+			leader.vel = Eigen::Vector2d::Zero();
+		}
+		leader.has_leader = true;
   }
 
   void obstacles_callback(const PerceptionObstacleArray::SharedPtr msg) {
@@ -195,7 +213,7 @@ public:
           !std::isfinite(obstacle.closest_point.y))
         continue;
       Obstacle o = from_obstacle(obstacle);
-      double dist = std::hypot(o.pos.x(), o.pos.y());
+      double dist = std::hypot(o.near_pos.x(), o.near_pos.y());
 
       // find sorted insertion point
       int k = count;
@@ -263,29 +281,22 @@ public:
   }
 
   void compute_command() {
-    const double now = time_now();
     cmd = Command();
 
-    if (!has_leader)
-      return;
-    if ((now - last_seen) > 1.0) {
-      has_leader = false;
-      last_path_valid = false;
+    if (!leader.has_leader) {
       return;
     }
 
     const double dt = this->dt;
 
-    const int NX = 3 * (PREDICTION_HORIZON + 1), NU = 3 * PREDICTION_HORIZON,
-              M = MAX_OBSTACLES;
-    const int n_vars = NX + NU + M * PREDICTION_HORIZON, N = PREDICTION_HORIZON;
-    auto xi = [&](int r, int k) { return 3 * k + r; }; // x section starts at 0
-    auto ui = [&](int r, int k) {
-      return NX + 3 * k + r;
-    }; // NX = 3*(N+1), where u starts
-    auto si = [&](int i, int k) {
-      return NX + NU + M * k + i;
-    }; // NU = 3*N, where s starts
+		const int N = PREDICTION_HORIZON, M = MAX_OBSTACLES;
+    const int NX = 3 * (N + 1), NU = NX + 3 * N, NS = NU + M * N, NL = NS + N * M;
+    const int n_vars = NL + 2 * N; // x, u, s, l, m
+    auto xi = [&](int r, int k) { return      3 * k + r; }; 
+    auto ui = [&](int r, int k) { return NX + 3 * k + r; };
+    auto si = [&](int i, int k) { return NU + M * k + i; }; 
+		auto li = [&](int i, int k) { return NS + M * k + i; }; 
+		auto mi = [&](int i, int k) { return NL + 2 * k + i; }; 
 
     A_c.clear();
     l.clear();
@@ -301,11 +312,10 @@ public:
 
     const Eigen::Vector2d Q = Eigen::Vector2d(8.0, 0.5);
     const Eigen::Vector3d R = Eigen::Vector3d(7.5, 7.5, 0.5);
-    const Eigen::Vector3d S =
-        Eigen::Vector3d(3.0, 3.0, 1.0); // Δu weights: vx, vy, wz
-    Eigen::Vector3d u_prev(last_path(0, 0), last_path(1, 0), last_path(2, 0));
-    if (!last_path_valid)
-      u_prev.setZero();
+    const Eigen::Vector3d S = Eigen::Vector3d(3.0, 3.0, 1.0); // Δu weights: vx, vy, wz
+
+		Eigen::Vector3d u_prev = Eigen::Vector3d::Zero();
+		if (last_path_valid) u_prev = last_path.col(0);
 
     const Eigen::Vector3d x0 = Eigen::Vector3d::Zero();
     Eigen::Vector2d p = Eigen::Vector2d::Zero();
@@ -316,21 +326,20 @@ public:
     double leader_margin = 2.0;
     double margin_cost = 50.0;
 
+		double los_margin = 1.0;
+		double los_cost_linear = 10.0;
+		double los_cost_quadratic = 20.0;
+
+
+		const double phi  = 1.4;                 // full-vision half-angle (~80°)
+		const double sphi = std::sin(phi), cphi = std::cos(phi);
+		const double w_cone_q = 20.0, w_cone_l = 4.0;   // outside full-vision cone
+		const double w_back_q = 40.0, w_back_l = 8.0;   // moving backwards
+
     const int num_obstacles = obstacles.size;
 
-    std::array<double, 4> leader_arr = {leader.range * std::cos(leader.bearing),
-                                        leader.range * std::sin(leader.bearing),
-                                        leader.velocity.x, leader.velocity.y};
-    double leader_speed = std::hypot(leader_arr[2], leader_arr[3]);
-
-    if (leader_speed < leader.velocity_std * 2.0) {
-      leader_arr[2] = 0.0;
-      leader_arr[3] = 0.0;
-    }
-
-    std::array<double, 6> speed_limit = {
-        -1.0, 1.0,  -1.0,
-        1.0,  -1.0, 1.0}; // vx_min, vx_max, vy_min, vy_max, wz_min, wz_max
+		std::array<double, 6> leader_arr = {leader.pos.x(), leader.pos.y(), leader.vel.x(), leader.vel.y(), leader.pos_std, leader.vel_std};
+    std::array<double, 4> speed_limit = { 2.0, 1.0, 0.5, 1.0}; // full_vision, partial_vision, poor_vision, heading_limit
 
     for (int r = 0; r < 3; ++r) {
       A_c.emplace_back(add_row(x0[r], x0[r]), xi(r, 0), 1.0);
@@ -349,10 +358,8 @@ public:
               -dt * Bm(r, c)); // 0.0 <= x_{k+1} - x_k - dt*B*u_k <= 0.0
         }
       }
-      for (int r = 0; r < 3; ++r) {
-        A_c.emplace_back(add_row(speed_limit[2 * r], speed_limit[2 * r + 1]),
-                         ui(r, k), 1.0); // lower_spd_lim <= u_k <= top_spd_lim
-      }
+		
+			A_c.emplace_back(add_row(-speed_limit[3], speed_limit[3]), ui(2, k), 1.0); // wz limit
       if (last_path_valid) {
         int idx = std::min(k + 1, PREDICTION_HORIZON - 1);
         double cos_t = std::cos(t);
@@ -360,13 +367,61 @@ public:
         p(0) += last_path(0, idx) * dt * cos_t - last_path(1, idx) * dt * sin_t;
         p(1) += last_path(0, idx) * dt * sin_t + last_path(1, idx) * dt * cos_t;
         t += last_path(2, idx) * dt;
-      }
+				double abs_dir = std::abs(std::atan2(last_path(1, idx), last_path(0, idx)));
+				if (abs_dir < 1.4) { // +/- 80 degrees full vision
+					A_c.emplace_back(add_row(-speed_limit[2], speed_limit[0]), ui(0, k), 1.0); // vx limit
+					A_c.emplace_back(add_row(-speed_limit[0], speed_limit[0]), ui(1, k), 1.0); // vy limit
+				} else if (abs_dir < 2.3) { // +/- 130 degrees partial vision 100%-60% vision
+					A_c.emplace_back(add_row(-speed_limit[2], speed_limit[1]), ui(0, k), 1.0); // vx limit
+					A_c.emplace_back(add_row(-speed_limit[1], speed_limit[1]), ui(1, k), 1.0); // vy limit
+				} else { // walking backwards
+					A_c.emplace_back(add_row(-speed_limit[2], speed_limit[2]), ui(0, k), 1.0); // vx limit
+					A_c.emplace_back(add_row(-speed_limit[2], speed_limit[2]), ui(1, k), 1.0); // vy limit
+				}
+      }	else {
+					A_c.emplace_back(add_row(-speed_limit[2], speed_limit[1]), ui(0, k), 1.0); // vx limit
+					A_c.emplace_back(add_row(-speed_limit[1], speed_limit[1]), ui(1, k), 1.0); // vy limit
+			}
+			const int vx = ui(0, k), vy = ui(1, k);
+			const int m_cone = mi(0, k), m_back = mi(1, k);
+
+			// m_cone >= -sinφ·vx + cosφ·vy  and  m_cone >= -sinφ·vx - cosφ·vy
+			// (distance of v outside the ±φ cone; outward normals of the two edges)
+			int r = add_row(0.0, OSQP_INFTY);
+			A_c.emplace_back(r, m_cone, 1.0);
+			A_c.emplace_back(r, vx,  sphi);
+			A_c.emplace_back(r, vy, -cphi);
+
+			r = add_row(0.0, OSQP_INFTY);
+			A_c.emplace_back(r, m_cone, 1.0);
+			A_c.emplace_back(r, vx, sphi);
+			A_c.emplace_back(r, vy, cphi);
+
+			// m_back >= -vx
+			r = add_row(0.0, OSQP_INFTY);
+			A_c.emplace_back(r, m_back, 1.0);
+			A_c.emplace_back(r, vx, 1.0);
+
+			// m >= 0
+			A_c.emplace_back(add_row(0.0, OSQP_INFTY), m_cone, 1.0);
+			A_c.emplace_back(add_row(0.0, OSQP_INFTY), m_back, 1.0);
+
+			// cost: quadratic + linear (linear term = penalty even at small speeds)
+			P_c.emplace_back(m_cone, m_cone, w_cone_q);
+			P_c.emplace_back(m_back, m_back, w_back_q);
+			q[m_cone] += w_cone_l;
+			q[m_back] += w_back_l;
+
+
       leader_arr[0] += leader_arr[2] * dt;
       leader_arr[1] += leader_arr[3] * dt;
+			leader_arr[4] += leader_arr[5] * dt;
+
       Eigen::Vector2d leader_pos(leader_arr[0], leader_arr[1]);
       Eigen::Vector2d leader_rel_pos = leader_pos - p;
       double leader_dist = std::hypot(leader_rel_pos(0), leader_rel_pos(1));
       Eigen::Vector2d leader_dir = leader_rel_pos / leader_dist;
+			leader_pos -= leader_dir * leader_arr[4];
       double leader_cost = leader_dir.dot(leader_pos) - leader_margin;
       double leader_heading = std::atan2(leader_dir(1), leader_dir(0));
       double leader_heading_err =
@@ -400,11 +455,14 @@ public:
       }
 
       for (int i = 0; i < MAX_OBSTACLES; ++i) {
-        P_c.emplace_back(si(i, k), si(i, k),
-                         margin_cost); // cost for soft margin
+        P_c.emplace_back(si(i, k), si(i, k), margin_cost); // cost for soft margin
+				const int l_ik = li(i, k);
+				P_c.emplace_back(l_ik, l_ik, los_cost_quadratic);
+				q[l_ik] += los_cost_linear;
+
         if (i < num_obstacles) {
           Obstacle &obs = obstacles.obstacles[i];
-          Eigen::Vector2d obs_pos = obs.pos;
+          Eigen::Vector2d obs_pos = obs.near_pos;
           Eigen::Vector2d obs_vel = obs.vel;
           obs_pos(0) += obs_vel(0) * dt * (k + 1);
           obs_pos(1) += obs_vel(1) * dt * (k + 1);
@@ -413,23 +471,59 @@ public:
           obs_pos(1) -= p(1);
           double obs_dist = std::hypot(obs_pos(0), obs_pos(1));
           Eigen::Vector2d obs_dir = obs_pos / obs_dist;
-          int row_idx = add_row(soft_margin - obs_dir.dot(obs_mov), OSQP_INFTY);
+				
+					double obs_margin = obs.pos_std + obs.vel_std * dt * (k + 1);
+
+          int row_idx = add_row(soft_margin + obs_margin - obs_dir.dot(obs_mov), OSQP_INFTY);
           // soft_margin - obs_dir.dot(obs_mov) <= -obs_dir.dot(x_{k+1}) +
           // s_{i,k} <= inf
           A_c.emplace_back(row_idx, xi(0, k + 1), -obs_dir(0));
           A_c.emplace_back(row_idx, xi(1, k + 1), -obs_dir(1));
           A_c.emplace_back(row_idx, si(i, k), 1.0);
+
+					obs_pos = obs.los_pos;
+					obs_pos(0) += obs_vel(0) * dt * (k + 1);
+					obs_pos(1) += obs_vel(1) * dt * (k + 1);
+					obs_mov = obs_pos;
+					obs_pos(0) -= p(0);
+					obs_pos(1) -= p(1);
+
+					const double along = leader_dir.dot(obs_pos);
+					if (std::isfinite(along) && along > 0.0 && along < leader_dist) {
+						const Eigen::Vector2d n_left(-leader_dir(1), leader_dir(0));
+						const double off = n_left.dot(obs_pos);
+						double side = off > 0.0 ? 1.0 : -1.0;
+						Eigen::Vector2d m = side * n_left;
+
+						double los_margin_i = los_margin + obs.pos_std + obs.vel_std * dt * (k + 1);
+						int los_row = add_row(los_margin_i - m.dot(obs_mov), OSQP_INFTY);
+						A_c.emplace_back(los_row, xi(0, k + 1), -m(0));
+						A_c.emplace_back(los_row, xi(1, k + 1), -m(1));
+						A_c.emplace_back(los_row, l_ik, 1.0);
+					} else {
+						int los_row = add_row(-OSQP_INFTY, OSQP_INFTY); // dummy, keeps sparsity fixed
+						A_c.emplace_back(los_row, xi(0, k + 1), 0.0);
+						A_c.emplace_back(los_row, xi(1, k + 1), 0.0);
+						A_c.emplace_back(los_row, l_ik, 0.0);
+					}
         } else {
           int row_idx = add_row(-OSQP_INFTY, OSQP_INFTY);
-          A_c.emplace_back(row_idx, xi(0, k + 1),
-                           0.0); // dummy constraint for unused obstacles
+          A_c.emplace_back(row_idx, xi(0, k + 1), 0.0); // dummy constraint for unused obstacles
           A_c.emplace_back(row_idx, xi(1, k + 1), 0.0);
           A_c.emplace_back(row_idx, si(i, k), 0.0);
+
+
+					int los_row = add_row(-OSQP_INFTY, OSQP_INFTY); // dummy, keeps sparsity fixed
+					A_c.emplace_back(los_row, xi(0, k + 1), 0.0);
+					A_c.emplace_back(los_row, xi(1, k + 1), 0.0);
+					A_c.emplace_back(los_row, l_ik, 0.0);
         }
         int s_row_idx = add_row(0.0, soft_margin - hard_margin);
         // 0.0 <= s_{i,k} <= soft_margin - hard_margin
-        A_c.emplace_back(s_row_idx, si(i, k),
-                         1.0); // s_{i,k} = 0 for unused obstacles
+        A_c.emplace_back(s_row_idx, si(i, k), 1.0); // s_{i,k} = 0 for unused obstacles
+				
+				A_c.emplace_back(add_row(0.0, OSQP_INFTY), l_ik, 1.0);
+
       }
     }
 
