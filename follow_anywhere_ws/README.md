@@ -89,3 +89,28 @@ Parameters: `video_height` (360/720), `lidar_topic` (`/utlidar/cloud_base`; `/ut
 Without the robot: `ros2 bag play ../go2_all_topics_6_10_11_28 --loop`. Use CycloneDDS for that (`export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`): Fast DDS fails to replay `/sportmodestate` from that bag.
 
 With the Gazebo sim, `go2_verify` sets `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` itself. The sim container runs as root, and its Fast DDS shared-memory segments in `/dev/shm` can't be read by the host user. So other host tools (`ros2 topic echo`, your own nodes) see the topics but receive no data. Export the same variable in their terminal.
+
+## Camera calibration
+
+`ros2 run perception calibrate_camera` measures where the RealSense sits on the Go2 (`base_link -> camera_link`) by aligning its depth points onto the Go2 lidar (`/utlidar/cloud_base`, already in `base_link`). It saves the result as `cameraX..cameraYaw` in `src/perception/config/perception_params.yaml`, and `perception.launch.py` publishes those values as the static TF at every start, so the camera and the lidar share the same 0 0 0. Settings: the `camera_calibration` section of the same file. The sim keeps its own estimate in `go2_bringup/config/go2_mounts.yaml`.
+
+**Scene.** The camera is tilted ~30° up, so it never sees the floor; it and the lidar only overlap on the walls, from about camera height up to roughly 0.3 m (at 2 m) to 0.8 m (at 4 m) above it. Nothing about the layout is hardcoded: it only needs surfaces both sensors see, facing enough different directions.
+
+- Robot standing still (or lying down, `J`) about 3 m from a room corner, pointing at it. Nobody in front during the ~15 s capture.
+- A flat, matte board (≥ 1 × 1 m: plywood, a table top on its side, a big cardboard sheet) leaned against a wall at ~45–60°, 2.5–3 m ahead and within ~40° of straight ahead, its top ~1 m above the floor. Walls only fix x, y and the angles; the board fixes the height.
+- Optional: a cabinet or box stack ~1 m tall, 2 m ahead and to the side.
+- Brick, plaster and painted walls are fine. Keep windows and glass doors (closed curtains are fine), mirrors, shiny metal and direct sunlight out of the camera's view.
+
+**Run** (on the Jetson, terminals set up as above):
+
+```bash
+ros2 launch perception perception.launch.py          # terminal 1: RealSense driver + TF
+ros2 run perception calibrate_camera                 # terminal 2: ~15-30 s, then Ctrl+C
+ros2 run perception calibrate_camera --ros-args -p paramsFile:=/tmp/copy.yaml   # read and write only that file
+```
+
+It prints the saved and the new mount, the residual, the matched points and the 4×4 matrix. It saves only when the residual is small, enough camera points lie on lidar surfaces, the scene holds the camera in every direction, and the result is within 0.15 m / 15° of the saved mount; otherwise it says why (e.g. which direction is not held). The saved mount is also the start value, so keep a rough tape measurement in the file (±5 cm / ±5°).
+
+**Check**: in the web viewer, open `/perception/calibration_cloud` and press `c`: lidar points have intensity 0, camera points moved with the new mount intensity 1; they should lie on the same walls. Restart `perception.launch.py` to use the new mount, repeat from 2-3 spots (results should agree within ~1 cm / 0.5°), and commit `perception_params.yaml` from the Jetson.
+
+Don't run `go2_tf.launch.py` next to `perception.launch.py` on the robot: it publishes a second `base_link -> camera_link` (the sim estimate) and optical frames that clash with the RealSense driver's.
