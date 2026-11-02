@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>web_viewer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside id="sidebar">
+    <header>
+      <h1>web_viewer</h1>
+      <span id="status" class="bad">disconnected</span>
+    </header>
+    <input id="filter" type="search" placeholder="Filter topics…" autocomplete="off">
+    <ul id="topics"></ul>
+  </aside>
+  <main id="panels">
+    <p id="empty">Click a topic on the left to open it. Images and point clouds are drawn, everything else is shown as JSON.</p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
