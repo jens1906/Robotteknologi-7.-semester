@@ -3,16 +3,23 @@
 # For every node (/**): the viewer draws the sensor fields from it too.
 /**:
   ros__parameters:
-    rate: 15.0                  # Hz, /perception/detections
+    rate: 15.0                  # Hz, /perception/leader + /perception/obstacles
     scan_rate: 15.0             # Hz, /perception/scan
     seed: -1                    # >= 0 for repeatable noise
 
-    # Lidar field (Unitree L1): all around, geometry only.
+    # Lidar field (Unitree L1): all around, geometry only. Specs: 360 x 90 deg
+    # dome, 30 m (90 % reflectivity) / 15 m (10 %), +-2 cm. Mount and leg
+    # occlusion measured from RosBag/go2_all_topics_6_10_11_28.
     lidar_fov_deg: 360.0
-    lidar_range_min: 0.1
+    lidar_range_min: 0.35           # m from base_link; Unitree crops the body out
     lidar_range_max: 15.0
-    lidar_range_std: [0.02, 0.01]   # m, std = a + b * range
+    lidar_range_std: [0.02, 0.005]  # m, std = a + b * range
     lidar_bearing_std_deg: 1.0
+    lidar_x: 0.283                  # m ahead of base_link
+    lidar_height: 0.42              # m above the floor
+    lidar_tilt_deg: 15.0            # upside down, pitched forward: ~1.6 m range straight behind
+    lidar_clear_fov_deg: 150.0      # never blocked by the legs (+-75 deg from the sensor)
+    lidar_self_occlusion_prob: 0.25 # chance a 10 deg sector outside it is blocked
 
     # Camera field (head camera): in front, classifies people and the leader.
     camera_fov_deg: 90.0
