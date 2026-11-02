@@ -14,7 +14,7 @@ applied (receding horizon).
 
 | Symbol | Value | Meaning |
 |---|---|---|
-| $N$ | $20$ | prediction horizon |
+| $N$ | $15$ | prediction horizon |
 | $\Delta t$ | $0.1\,\text{s}$ | sampling time ($1/\text{rate}$) |
 | $x_k = [p_k^\top,\ \theta_k]^\top \in \mathbb R^3$ | | robot position $p_k$ and yaw $\theta_k$ |
 | $u_k = [v_{x,k},\ v_{y,k},\ \omega_k]^\top \in \mathbb R^3$ | | body-frame velocity command |
@@ -28,17 +28,24 @@ applied (receding horizon).
 | $\sigma_i,\ \sigma_{v,i}$ | | obstacle position and velocity standard deviation |
 | $m_\ell$ | $2\,\text{m}$ | leader distance |
 | $m_s,\ m_h$ | $2\,\text{m},\ 1\,\text{m}$ | soft and hard obstacle margins |
+| $h_{i,k} \ge 0$ | | hard-margin violation slack (keeps the QP feasible) |
 | $m_{los}$ | $1\,\text{m}$ | line-of-sight margin |
 | $s_{i,k} \ge 0$ | | obstacle slack |
 | $l_{i,k} \ge 0$ | | line-of-sight slack |
 | $c_m$ | $50$ | obstacle slack weight |
 | $\varphi$ | $1.4\,\text{rad}\ (\approx 80^\circ)$ | full-vision half-angle of the lidar |
-| $v^{full},\ v^{part},\ v^{poor}$ | $2,\ 1,\ 0.5\,\text{m/s}$ | speed limits per vision sector |
+| $v^{full},\ v^{part},\ v^{poor}$ | $2,\ 1,\ 0\,\text{m/s}$ | speed limits per vision sector |
 | $\omega_{\max}$ | $1\,\text{rad/s}$ | yaw-rate limit |
 | $z^{cone}_k,\ z^{back}_k \ge 0$ | | vision penalty slacks |
 
 Everything is expressed in the robot body frame at the solve instant, so $x_0 = 0$.
-Agent velocities are relative to the ground. Latency is neglected.
+Agent velocities are relative to the ground. Detections are predicted forward by their
+age $\tau = t_{now} - t_{stamp} + \Delta t$ (image to command taking effect), so
+$k\Delta t$ below reads $\tau + k\Delta t$. Obstacle arrays older than $0.5\,\text{s}$ are ignored.
+
+If no leader is visible the leader weights are set to $0$ and the line-of-sight
+constraints are disabled; the robot then only avoids obstacles (stands still unless
+someone comes too close).
 
 ---
 
@@ -117,8 +124,11 @@ The obstacle margins are inflated by the obstacle uncertainty, which grows along
 horizon:
 
 $$
-\delta_{i,k} = \sigma_i + (k+1)\Delta t\, \sigma_{v,i}.
+\delta_{i,k} = \sigma_i + \min\big((k+1)\Delta t\, \sigma_{v,i},\ 0.5\big).
 $$
+
+The cap keeps an unknown velocity (large $\sigma_{v,i}$) from demanding metres of
+clearance at the end of the horizon.
 
 ### Line-of-sight point
 
@@ -174,7 +184,7 @@ and the table is split into three sectors:
 
 | Sector | Direction | Blocked |
 |---|---|---|
-| full vision | $\alpha_k < 1.4\,\text{rad}\ (\approx 80^\circ)$ | $\le 0.4\,\%$ |
+| full vision | $\alpha_k < 1.4\,\text{rad}\ (\approx 80^\circ)$, or $\lVert \bar v_k\rVert < 0.1\,\text{m/s}$ | $\le 0.4\,\%$ |
 | partial vision | $1.4 \le \alpha_k < 2.3\,\text{rad}\ (\approx 130^\circ)$ | $4$–$40\,\%$ |
 | poor vision (backwards) | $\alpha_k \ge 2.3\,\text{rad}$ | includes the $40$–$49\,\%$ leg band |
 
@@ -192,8 +202,8 @@ $$
 & x_0 = 0, \\
 & x_{k+1} = x_k + \Delta t\, B_k u_k, \\
 & \lvert\omega_k\rvert \le \omega_{\max}, \\
-& \hat n_{i,k}^\top\big(o_{i,k+1} - p_{k+1}\big) \ge m_s + \delta_{i,k} - s_{i,k}, \\
-& 0 \le s_{i,k} \le m_s - m_h , \\
+& \hat n_{i,k}^\top\big(o_{i,k+1} - p_{k+1}\big) \ge m_s + \delta_{i,k} - s_{i,k} - h_{i,k}, \\
+& 0 \le s_{i,k} \le m_s - m_h , \qquad h_{i,k} \ge 0, \\
 & \hat a_{i,k}^\top\big(q_{i,k+1} - p_{k+1}\big) \ge m_{los} + \delta_{i,k} - l_{i,k}
   \quad \text{(only while the LOS point is active, §4)}, \\
 & l_{i,k} \ge 0 .
@@ -204,7 +214,11 @@ The obstacle constraint replaces the non-convex disk exclusion
 $\lVert o - p\rVert \ge m_s$ with a half-plane that touches the disk at the nominal.
 Since $\lVert o-p\rVert \ge \hat n^\top(o-p)$, the half-plane is a conservative
 convex approximation. The slack makes $m_h$ a hard clearance and $m_s$ a preferred
-one, both widened by the uncertainty $\delta_{i,k}$.
+one, both widened by the uncertainty $\delta_{i,k}$. The hard margin is enforced by an
+exact penalty on $h_{i,k}$ rather than as a hard constraint: when a person is already
+too close (or approaches faster than the robot can leave), a hard constraint would be
+infeasible and the robot would stop; with $h$ it instead takes the move that violates
+the margin least.
 
 The line-of-sight constraint keeps the obstacle at least $m_{los}$ to the side of the
 robot–leader line, so the obstacle does not block the view of the leader. It is soft
@@ -263,7 +277,7 @@ J = \sum_{k=0}^{N-1} \Big(
 & e_k^\top Q\, e_k
 + u_k^\top R\, u_k
 + (u_k - u_{k-1})^\top S\, (u_k - u_{k-1}) \\
-& + \sum_{i=1}^{M} \big( c_m\, s_{i,k}^2 + w^{los}_q\, l_{i,k}^2 + w^{los}_l\, l_{i,k} \big) \\
+& + \sum_{i=1}^{M} \big( c_m\, s_{i,k}^2 + c^{l}_m\, s_{i,k} + w^{h}_q\, h_{i,k}^2 + w^{h}_l\, h_{i,k} + w^{los}_q\, l_{i,k}^2 + w^{los}_l\, l_{i,k} \big) \\
 & + w^{cone}_q (z^{cone}_k)^2 + w^{cone}_l\, z^{cone}_k
 + w^{back}_q (z^{back}_k)^2 + w^{back}_l\, z^{back}_k
 \Big),
@@ -276,13 +290,14 @@ to zero.
 
 | Weight | Value |
 |---|---|
-| $Q$ | $\operatorname{diag}(8,\ 0.5)$ |
-| $R$ | $\operatorname{diag}(7.5,\ 7.5,\ 0.5)$ |
+| $Q$ | $\operatorname{diag}(8,\ 0.25)$ |
+| $R$ | $\operatorname{diag}(5,\ 5,\ 1)$ |
 | $S$ | $\operatorname{diag}(3,\ 3,\ 1)$ |
-| $c_m$ | $50$ |
+| $c_m,\ c^{l}_m$ | $50,\ 10$ |
+| $w^{h}_q,\ w^{h}_l$ | $1000,\ 1000$ |
 | $w^{los}_q,\ w^{los}_l$ | $20,\ 10$ |
-| $w^{cone}_q,\ w^{cone}_l$ | $20,\ 4$ |
-| $w^{back}_q,\ w^{back}_l$ | $40,\ 8$ |
+| $w^{cone}_q,\ w^{cone}_l$ | $30,\ 6$ |
+| $w^{back}_q,\ w^{back}_l$ | $80,\ 16$ |
 
 $J$ is convex quadratic and every constraint is affine, so the problem is a QP.
 
@@ -293,7 +308,7 @@ $J$ is convex quadratic and every constraint is affine, so the problem is a QP.
 At each tick:
 
 $$
-u^\star = \arg\min_{x,\,u,\,s,\,l,\,z}\ J \quad \text{s.t. §6},
+u^\star = \arg\min_{x,\,u,\,s,\,h,\,l,\,z}\ J \quad \text{s.t. §6},
 \qquad
 u(t_0) = u^\star_0 .
 $$
