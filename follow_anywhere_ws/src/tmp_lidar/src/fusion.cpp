@@ -108,7 +108,7 @@ FusionOutput Fusion::fuse(const FusionInput & input, const std::vector<Cluster> 
     const auto ci = static_cast<std::size_t>(clusterOfPerson[pi]);
     const Cluster & c = clusters[ci];
     leader.closest = c.closest;
-    leader.positionSigma = lidarSigma(norm(c.closest));
+    leader.positionSigma = lidarSigma(norm(c.closest)) + c.extraSigma;
     blendVelocity(input.leader.velocity, input.leader.velocitySigma, c.velocity, c.velocitySigma,
       leader.velocity, leader.velocitySigma);
     out.leaderEnriched = true;
@@ -133,7 +133,7 @@ FusionOutput Fusion::fuse(const FusionInput & input, const std::vector<Cluster> 
         out.clusterOwner[ci] = kOwnerLeader;
         out.leaderCluster = static_cast<int>(ci);
         leaderPointOdom_ = robot.toOdom(clusters[ci].closest);
-        leaderPointSigma_ = lidarSigma(norm(clusters[ci].closest));
+        leaderPointSigma_ = lidarSigma(norm(clusters[ci].closest)) + clusters[ci].extraSigma;
         haveLeaderPoint_ = true;
         break;
       }
@@ -171,7 +171,7 @@ FusionOutput Fusion::fuse(const FusionInput & input, const std::vector<Cluster> 
         fused.source = Source::CameraLidar;
         fused.cluster = ci;
         fused.data.closest = c.closest;
-        fused.data.positionSigma = lidarSigma(norm(c.closest));
+        fused.data.positionSigma = lidarSigma(norm(c.closest)) + c.extraSigma;
         fused.data.lineOfSight = lineOfSight(c);
         blendVelocity(input.obstacles[i].velocity, input.obstacles[i].velocitySigma, c.velocity, c.velocitySigma,
           fused.data.velocity, fused.data.velocitySigma);
@@ -189,7 +189,7 @@ FusionOutput Fusion::fuse(const FusionInput & input, const std::vector<Cluster> 
     fused.data.closest = c.closest;
     fused.data.lineOfSight = lineOfSight(c);
     fused.data.velocity = c.velocity;
-    fused.data.positionSigma = lidarSigma(norm(c.closest));
+    fused.data.positionSigma = lidarSigma(norm(c.closest)) + c.extraSigma;
     fused.data.velocitySigma = c.velocitySigma;
     out.obstacles.push_back(fused);
   }
