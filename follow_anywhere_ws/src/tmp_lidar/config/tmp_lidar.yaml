@@ -17,17 +17,28 @@ tmp_lidar:
     debugTopic: /perception/lidar_debug
     publishDebug: true
 
-    # --- cloud filter ---------------------------------------------------------------------------
-    floorZ: -0.32               # MEASURED: floor in base_link, standing Go2 (/sportmodestate body_height ~0.32)
-    estimateFloor: true         # measure the floor each cloud (5th percentile of z near the robot) ...
-    floorSearch: 0.15           # GUESS: ... kept within floorZ +- this
-    groundHeight: 0.05          # COPIED: m above the floor that counts as floor
+    # --- floor + cloud filter ------------------------------------------------------------------
+    # The floor is a plane fitted to each cloud: the body pitches/rolls up to ~6 deg while walking, which is
+    # +-0.25 m of floor height at 5 m. Bag go2_all_topics_6_10_11_28: floor z0 -0.37..-0.40 in base_link,
+    # tilt 1-4 deg, residual std 2.3 cm, 99 % within 8.6 cm.
+    fitFloorPlane: true         # false: flat floor at floorZ
+    floorZ: -0.38               # MEASURED: floor height at base_link (start value and fallback)
+    floorSearch: 0.15           # GUESS: plane height must stay within floorZ +- this; also the candidate band
+    floorFitRange: 4.0          # GUESS: m, points nearer than this are used for the fit
+    floorMaxTilt: 10.0          # GUESS: deg, steeper planes are rejected (last good plane kept)
+    floorInlierBand: 0.04       # MEASURED: ~2 sigma of the floor residual
+    floorMinimumPoints: 50      # GUESS: inliers needed to accept a plane
+    groundHeight: 0.10          # MEASURED: m above the plane that counts as floor (99 % of the floor is within 8.6 cm)
     maxHeight: 1.9              # GUESS: m above the floor; higher (ceilings, overhangs) is ignored
     bodyBoxMin: [-0.45, -0.2]   # COPIED from the Gazebo lidar emulator: base_link box of the robot itself
     bodyBoxMax: [0.45, 0.2]
     rangeMin: 0.35              # COPIED: Unitree crops the body out to about this
     obstacleMaxRange: 6.0       # COPIED: m, farther points are ignored
-    accumulateFrames: 2         # GUESS: clouds merged (in odom); the L1 gives ~4k points per cloud. More = denser, but people smear
+
+    # --- short memory (against flicker: the L1 gives only ~1400 points per cloud on the robot) ------
+    hitCellSize: 0.1            # GUESS: m, grid in odom
+    memorySeconds: 0.4          # GUESS: s a hit is remembered (~6 clouds); moving people leave at most this much trail
+    minCellHits: 2              # GUESS: clouds that must hit a cell within memorySeconds; 1 = no speckle filter
 
     # --- clusters -------------------------------------------------------------------------------
     cellSize: 0.1               # GUESS: grid cell; points in touching cells are one obstacle
@@ -42,6 +53,11 @@ tmp_lidar:
     trackTimeout: 1.0           # COPIED: s without a cluster before its track is dropped
     unknownVelocitySigma: 1.5   # COPIED: m/s, velocity sigma before the second sighting
     staticVelocitySigma: 0.1    # GUESS: m/s, velocity sigma of wall pieces (velocity 0)
+    confirmHits: 2              # GUESS: sightings before a cluster is published
+    coastTime: 0.3              # GUESS: s a confirmed cluster missed by the lidar is still published (near the robot) ...
+    coastTimeFar: 0.8           # GUESS: ... rising linearly to this at coastFarRange (MEASURED: far objects churn 10x more)
+    coastFarRange: 5.0
+    coastSigmaRate: 0.5         # GUESS: m/s, position sigma growth while coasting
     odometryTimeout: 0.5        # COPIED: s without odometry before velocities count as unknown
 
     # --- fusion with the camera -----------------------------------------------------------------

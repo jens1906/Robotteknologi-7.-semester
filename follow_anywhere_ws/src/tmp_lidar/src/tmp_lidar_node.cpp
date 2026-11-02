@@ -21,6 +21,7 @@
 // unchanged, so the system still works without the lidar.
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -44,6 +45,7 @@
 #include "tmp_lidar/cluster_tracker.hpp"
 #include "tmp_lidar/clustering.hpp"
 #include "tmp_lidar/fusion.hpp"
+#include "tmp_lidar/hit_grid.hpp"
 #include "tmp_lidar/scan_builder.hpp"
 
 namespace tmp_lidar
@@ -227,8 +229,13 @@ public:
 
     // --- cloud filter
     filter_.floorZ = declare_parameter("floorZ", filter_.floorZ);
-    filter_.estimateFloor = declare_parameter("estimateFloor", filter_.estimateFloor);
+    filter_.fitFloorPlane = declare_parameter("fitFloorPlane", filter_.fitFloorPlane);
     filter_.floorSearch = declare_parameter("floorSearch", filter_.floorSearch);
+    filter_.floorFitRange = declare_parameter("floorFitRange", filter_.floorFitRange);
+    filter_.floorMaxTiltDeg = declare_parameter("floorMaxTilt", filter_.floorMaxTiltDeg);
+    filter_.floorInlierBand = declare_parameter("floorInlierBand", filter_.floorInlierBand);
+    filter_.floorMinimumPoints = static_cast<int>(
+      declare_parameter("floorMinimumPoints", static_cast<int64_t>(filter_.floorMinimumPoints)));
     filter_.groundHeight = declare_parameter("groundHeight", filter_.groundHeight);
     filter_.maxHeight = declare_parameter("maxHeight", filter_.maxHeight);
     const auto bodyMin = declare_parameter("bodyBoxMin", std::vector<double>{filter_.bodyMin.x, filter_.bodyMin.y});
@@ -237,7 +244,14 @@ public:
     if (bodyMax.size() >= 2) {filter_.bodyMax = {bodyMax[0], bodyMax[1]};}
     filter_.rangeMin = declare_parameter("rangeMin", filter_.rangeMin);
     filter_.rangeMax = declare_parameter("obstacleMaxRange", filter_.rangeMax);
-    accumulateFrames_ = static_cast<std::size_t>(std::max<int64_t>(1, declare_parameter("accumulateFrames", 2)));
+
+    // --- hit grid (short memory in odom)
+    HitGridParams gridParams;
+    gridParams.cellSize = declare_parameter("hitCellSize", gridParams.cellSize);
+    gridParams.memorySeconds = declare_parameter("memorySeconds", gridParams.memorySeconds);
+    gridParams.minCellHits = static_cast<int>(
+      declare_parameter("minCellHits", static_cast<int64_t>(gridParams.minCellHits)));
+    hitGrid_ = HitGrid(gridParams);
 
     // --- clustering
     ClusterParams clusterParams;
@@ -256,6 +270,12 @@ public:
     trackerParams.trackTimeout = declare_parameter("trackTimeout", trackerParams.trackTimeout);
     trackerParams.unknownVelocitySigma = declare_parameter("unknownVelocitySigma", trackerParams.unknownVelocitySigma);
     trackerParams.staticVelocitySigma = declare_parameter("staticVelocitySigma", trackerParams.staticVelocitySigma);
+    trackerParams.confirmHits = static_cast<int>(
+      declare_parameter("confirmHits", static_cast<int64_t>(trackerParams.confirmHits)));
+    trackerParams.coastTime = declare_parameter("coastTime", trackerParams.coastTime);
+    trackerParams.coastTimeFar = declare_parameter("coastTimeFar", trackerParams.coastTimeFar);
+    trackerParams.coastFarRange = declare_parameter("coastFarRange", trackerParams.coastFarRange);
+    trackerParams.coastSigmaRate = declare_parameter("coastSigmaRate", trackerParams.coastSigmaRate);
     tracker_ = ClusterTracker(trackerParams);
 
     // --- fusion
@@ -311,7 +331,7 @@ private:
       RCLCPP_WARN(get_logger(), "odometry back after %.1f s: tracks restarted", arrival - lastOdometryArrival_);
       clockOffset_.reset();
       poses_.clear();
-      frames_.clear();
+      hitGrid_.clear();
       tracker_.reset();
     }
     lastOdometryArrival_ = arrival;
@@ -353,48 +373,58 @@ private:
     const double outputTime = clockOffset_.known() ? cloudTime + clockOffset_.offset() : arrival;
     const auto stamp = toStamp(outputTime);
 
-    // --- filter, accumulate in odom, back into the current base_link
+    // --- floor plane, obstacle points
     const auto cloud = readCloud(msg);
     if (cloud.empty() && msg.width * msg.height > 0) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "cloud without float x/y/z fields, ignored");
       return;
     }
-    const FilterResult filtered = filterCloud(cloud, filter_);
-    std::vector<Point2> points = filtered.points;
-    if (pose) {
-      Frame frame;
-      frame.points.reserve(filtered.points.size());
-      for (const auto & p : filtered.points) {frame.points.push_back(robot.toOdom(p));}
-      frames_.push_back(std::move(frame));
-      while (frames_.size() > accumulateFrames_) {frames_.pop_front();}
-      for (std::size_t f = 0; f + 1 < frames_.size(); ++f) {
-        for (const auto & q : frames_[f].points) {
-          const Point2 p = robot.toBase(q);
-          const double r = norm(p);
-          if (r >= filter_.rangeMin && r <= filter_.rangeMax) {points.push_back(p);}
-        }
+    const GroundPlane plane = ground_.update(cloud, filter_);
+    const FilterResult filtered = filterCloud(cloud, filter_, plane);
+
+    // --- short memory in odom: only cells hit by several clouds count
+    std::vector<Point2> odomPoints;
+    odomPoints.reserve(filtered.points.size());
+    for (const auto & p : filtered.points) {odomPoints.push_back(robot.toOdom(p));}
+    if (!pose) {
+      if (!warnedNoOdometry_) {
+        RCLCPP_WARN(get_logger(), "no odometry for the cloud: no memory between clouds, velocities unknown");
+        warnedNoOdometry_ = true;
       }
-    } else {
-      frames_.clear();
+      hitGrid_.clear();
+    }
+    hitGrid_.add(odomPoints, cloudTime);
+    const auto occupied = pose ? hitGrid_.occupiedPoints(cloudTime) : hitGrid_.occupiedPoints(cloudTime, 1);
+    std::vector<Point2> nearby;   // in range of the current base_link
+    nearby.reserve(occupied.size());
+    for (const auto & q : occupied) {
+      const double r = norm(robot.toBase(q));
+      if (r >= filter_.rangeMin && r <= filter_.rangeMax) {nearby.push_back(q);}
     }
 
-    // --- clusters
-    auto clusters = clusterPoints(points, clusterParams_);
+    // --- clusters (grid in odom), tracks, what is steady enough to publish
+    auto clusters = clusterPoints(nearby, clusterParams_, robot);
     tracker_.update(clusters, robot, pose.has_value(), cloudTime);
+    const auto steady = tracker_.publishable(clusters, robot, cloudTime);
 
     // --- fuse with the camera
     FusionInput input = buildCameraInput(arrival, robot, pose.has_value());
-    const FusionOutput fused = fusion_.fuse(input, clusters, robot, cloudTime);
+    const FusionOutput fused = fusion_.fuse(input, steady, robot, cloudTime);
 
     if (input.haveCamera) {
       leaderPub_->publish(buildLeaderMessage(fused.leader, stamp));
     }
     obstaclesPub_->publish(buildObstaclesMessage(fused, stamp));
     scanPub_->publish(buildScan(filtered.points, stamp));
-    if (debugPub_) {debugPub_->publish(buildMarkers(clusters, fused, stamp));}
+    if (debugPub_) {debugPub_->publish(buildMarkers(steady, fused, plane, stamp));}
 
-    RCLCPP_DEBUG(get_logger(), "cloud %zu pts -> %zu kept (floor %.2f) -> %zu clusters, %zu obstacles",
-      cloud.size(), points.size(), filtered.floorZ, clusters.size(), fused.obstacles.size());
+    std::size_t coasting = 0;
+    for (const auto & c : steady) {coasting += c.isCoasting ? 1 : 0;}
+    RCLCPP_DEBUG(get_logger(),
+      "cloud %zu pts -> %zu kept (plane z0 %.3f tilt %.1f deg, %d inliers%s) -> %zu occupied pts -> "
+      "%zu clusters -> %zu steady (%zu coasting), %zu obstacles",
+      cloud.size(), filtered.points.size(), plane.c, plane.tiltDeg(), plane.inliers, plane.fitted ? "" : ", flat",
+      nearby.size(), clusters.size(), steady.size(), coasting, fused.obstacles.size());
   }
 
   // The newest camera messages, moved from the camera's time to the cloud's (robot pose `robot`).
@@ -490,12 +520,26 @@ private:
   }
 
   MarkerArray buildMarkers(const std::vector<Cluster> & clusters, const FusionOutput & fused,
-    const builtin_interfaces::msg::Time & stamp)
+    const GroundPlane & plane, const builtin_interfaces::msg::Time & stamp)
   {
     MarkerArray array;
     Marker clear;
     clear.action = Marker::DELETEALL;
     array.markers.push_back(clear);
+    Marker text;
+    text.header.stamp = stamp;
+    text.header.frame_id = baseFrame_;
+    text.ns = "floor";
+    text.type = Marker::TEXT_VIEW_FACING;
+    text.pose.position.z = 1.2;
+    text.pose.orientation.w = 1.0;
+    text.scale.z = 0.15;
+    text.color.r = text.color.g = text.color.b = text.color.a = 1.0f;
+    char buffer[96];
+    std::snprintf(buffer, sizeof buffer, "floor z0 %.2f tilt %.1f deg%s", plane.c, plane.tiltDeg(),
+      plane.fitted ? "" : " (flat)");
+    text.text = buffer;
+    array.markers.push_back(text);
     for (std::size_t i = 0; i < clusters.size(); ++i) {
       const Cluster & c = clusters[i];
       const int owner = fused.clusterOwner[i];
@@ -518,6 +562,9 @@ private:
         m.color.b = 1.0f;                       // leader
       } else if (owner >= 0) {
         m.color.g = 1.0f;                       // camera person
+      } else if (c.isCoasting) {
+        m.color.r = 1.0f;                       // lidar only, missed this cloud
+        m.color.g = 0.5f;
       } else {
         m.color.r = m.color.g = m.color.b = 0.6f;   // lidar only
       }
@@ -538,16 +585,10 @@ private:
     return array;
   }
 
-  struct Frame
-  {
-    std::vector<Point2> points;   // odom
-  };
-
   // parameters
   std::string baseFrame_;
   FilterParams filter_;
   ClusterParams clusterParams_;
-  std::size_t accumulateFrames_ = 2;
   double cameraTimeout_ = 0.5;
   double lidarTimeout_ = 0.5;
   double odometryTimeout_ = 0.5;
@@ -557,7 +598,9 @@ private:
   // state
   ClockOffset clockOffset_;
   PoseHistory poses_;
-  std::deque<Frame> frames_;
+  GroundEstimator ground_;
+  HitGrid hitGrid_;
+  bool warnedNoOdometry_ = false;
   ClusterTracker tracker_;
   Fusion fusion_;
   double lastOdometryArrival_ = -1.0;

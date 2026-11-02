@@ -22,6 +22,7 @@ add_library(tmp_lidar_core STATIC
   src/clustering.cpp
   src/cluster_tracker.cpp
   src/fusion.cpp
+  src/hit_grid.cpp
   src/scan_builder.cpp)
 target_include_directories(tmp_lidar_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

@@ -99,6 +99,8 @@ struct Cluster
   int trackId = -1;
   Point2 velocity;                 // over the ground, base_link axes; already 0 when standing still
   double velocitySigma = kNaN;     // m/s, 1 sigma
+  bool isCoasting = false;         // not seen in this cloud: last points, moved by the velocity
+  double extraSigma = 0.0;         // m, added to the position sigma (grows while coasting)
 };
 
 // Fills centroid, closest and radius from points.

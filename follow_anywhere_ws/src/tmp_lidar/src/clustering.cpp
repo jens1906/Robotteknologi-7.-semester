@@ -35,14 +35,16 @@ std::unordered_map<CellKey, std::vector<std::size_t>> buildGrid(
 }
 
 // Large cluster -> pieces on a coarse grid (every piece keeps at least 2 points).
-void splitIntoChunks(const Cluster & big, const ClusterParams & params, std::vector<Cluster> & out)
+// big holds frame (odom) points; pieces are made in that frame and converted to base_link of robot.
+void splitIntoChunks(const Cluster & big, const ClusterParams & params, const Pose2 & robot,
+  std::vector<Cluster> & out)
 {
   const auto grid = buildGrid(big.points, params.chunkSize);
   for (const auto & cell : grid) {
     if (cell.second.size() < 2) {continue;}
     Cluster piece;
     piece.isChunk = true;
-    for (auto i : cell.second) {piece.points.push_back(big.points[i]);}
+    for (auto i : cell.second) {piece.points.push_back(robot.toBase(big.points[i]));}
     finalizeCluster(piece);
     out.push_back(std::move(piece));
   }
@@ -50,7 +52,8 @@ void splitIntoChunks(const Cluster & big, const ClusterParams & params, std::vec
 
 }  // namespace
 
-std::vector<Cluster> clusterPoints(const std::vector<Point2> & points, const ClusterParams & params)
+std::vector<Cluster> clusterPoints(const std::vector<Point2> & points, const ClusterParams & params,
+  const Pose2 & robot)
 {
   std::vector<Cluster> clusters;
   if (points.empty() || params.cellSize <= 0.0) {return clusters;}
@@ -83,10 +86,12 @@ std::vector<Cluster> clusterPoints(const std::vector<Point2> & points, const Clu
       }
     }
     if (static_cast<int>(cluster.points.size()) < params.minClusterPoints) {continue;}
-    finalizeCluster(cluster);
+    finalizeCluster(cluster);   // radius is the same in either frame
     if (params.maxClusterRadius > 0.0 && cluster.radius > params.maxClusterRadius) {
-      splitIntoChunks(cluster, params, clusters);
+      splitIntoChunks(cluster, params, robot, clusters);
     } else {
+      for (auto & p : cluster.points) {p = robot.toBase(p);}
+      finalizeCluster(cluster);
       clusters.push_back(std::move(cluster));
     }
   }
