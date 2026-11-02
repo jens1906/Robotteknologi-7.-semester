@@ -8,6 +8,9 @@ const STORE = 'web_viewer.open';
 let ws = null;
 let topics = [];                  // [[name, type], ...]
 const panels = new Map();         // topic -> Panel
+// Views that draw several topics together (perception.js). Each has
+// subscribedTopics: topic -> {subscribeOptions, HandleMessage(data, stamp)}.
+const views = new Set();
 let savedOpen = JSON.parse(localStorage.getItem(STORE) || 'null');
 
 // ------------------------------------------------------------- connection
@@ -19,6 +22,9 @@ function connect() {
   ws.onopen = () => {
     setStatus(true);
     for (const t of panels.keys()) send({ op: 'sub', topic: t });
+    for (const v of views) {
+      for (const [t, s] of v.subscribedTopics) send({ op: 'sub', topic: t, ...s.subscribeOptions });
+    }
   };
   ws.onclose = () => {
     setStatus(false);
@@ -28,7 +34,9 @@ function connect() {
 }
 
 function send(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify(obj));
+  return true;
 }
 
 function setStatus(ok) {
@@ -50,10 +58,18 @@ function onText(m) {
         const names = new Set(topics.map((t) => t[0]));
         for (const t of savedOpen) if (names.has(t) && !panels.has(t)) openPanel(t);
       }
+      for (const v of views) v.HandleTopicList(topics.map((t) => t[0]));
       break;
     case 'subscribed': panels.get(m.topic)?.setType(m.type, m.kind); break;
-    case 'msg': panels.get(m.topic)?.onJson(m.data); break;
-    case 'error': panels.get(m.topic)?.setError(m.error); break;
+    case 'msg':
+      panels.get(m.topic)?.onJson(m.data);
+      for (const v of views) v.subscribedTopics.get(m.topic)?.HandleMessage(m.data);
+      break;
+    case 'error':
+      panels.get(m.topic)?.setError(m.error);
+      for (const v of views) if (v.subscribedTopics.has(m.topic)) v.HandleTopicError(m.topic, m.error);
+      break;
+    case 'result': for (const v of views) v.HandleServiceResult(m); break;
   }
 }
 
@@ -62,11 +78,18 @@ function onBinary(buf) {
   const kind = v.getUint8(0);
   const len = v.getUint16(2, true);
   const topic = new TextDecoder().decode(new Uint8Array(buf, 4, len));
-  const start = 4 + len + ((4 - ((4 + len) % 4)) % 4);
+  let start = 4 + len + ((4 - ((4 + len) % 4)) % 4);
   const p = panels.get(topic);
-  if (!p) return;
-  if (kind === 1 || kind === 2) p.onImage(new Blob([new Uint8Array(buf, start)], { type: kind === 1 ? 'image/jpeg' : 'image/png' }));
-  else if (kind === 3) p.onCloud(new Float32Array(buf, start, (buf.byteLength - start) / 4));
+  if (kind === 1 || kind === 2) {
+    // Images start with their header stamp, as "sec.nanosec" like the JSON stamps.
+    const stamp = `${v.getUint32(start, true)}.${v.getUint32(start + 4, true)}`;
+    start += 8;
+    const blob = new Blob([new Uint8Array(buf, start)], { type: kind === 1 ? 'image/jpeg' : 'image/png' });
+    p?.onImage(blob);
+    for (const view of views) view.subscribedTopics.get(topic)?.HandleMessage(blob, stamp);
+  } else if (kind === 3) {
+    p?.onCloud(new Float32Array(buf, start, (buf.byteLength - start) / 4));
+  }
 }
 
 // ------------------------------------------------------------- topic list
@@ -100,15 +123,39 @@ function closePanel(topic) {
   if (!p) return;
   p.destroy();
   panels.delete(topic);
-  send({ op: 'unsub', topic });
+  if (!viewUses(topic)) send({ op: 'unsub', topic });
   saveOpen();
 }
 
 function saveOpen() {
   savedOpen = [...panels.keys()];
   localStorage.setItem(STORE, JSON.stringify(savedOpen));
-  $('#empty').style.display = panels.size ? 'none' : '';
+  updateEmpty();
   renderTopics();
+}
+
+function updateEmpty() {
+  $('#empty').style.display = panels.size || views.size ? 'none' : '';
+}
+
+// Views subscribe themselves (send with their options); these only keep the
+// registry so messages reach them and the server drops what nobody uses.
+function openView(view) {
+  views.add(view);
+  updateEmpty();
+}
+
+function closeView(view) {
+  views.delete(view);
+  for (const t of view.subscribedTopics.keys()) {
+    if (!panels.has(t) && !viewUses(t)) send({ op: 'unsub', topic: t });
+  }
+  updateEmpty();
+}
+
+function viewUses(topic) {
+  for (const v of views) if (v.subscribedTopics.has(topic)) return true;
+  return false;
 }
 
 // ------------------------------------------------------------------ panel

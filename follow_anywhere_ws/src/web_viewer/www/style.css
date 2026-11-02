@@ -14,6 +14,10 @@ body { margin: 0; display: flex; height: 100vh; background: var(--bg); color: va
 .ok { color: var(--ok); } .bad { color: var(--bad); }
 #filter { margin: 0 12px 8px; padding: 6px 8px; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 4px; }
+#perception-toggle { margin: 0 12px 8px; padding: 6px 8px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-left: 3px solid transparent; border-radius: 4px; cursor: pointer; text-align: left; }
+#perception-toggle:hover { background: #222934; }
+#perception-toggle.open { border-left-color: var(--accent); }
 #topics { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
 #topics li { padding: 5px 12px; cursor: pointer; border-left: 3px solid transparent; }
 #topics li:hover { background: #222934; }
@@ -43,3 +47,6 @@ body { margin: 0; display: flex; height: 100vh; background: var(--bg); color: va
   white-space: pre-wrap; word-break: break-all; }
 .panel .hint { position: absolute; left: 8px; bottom: 6px; font-size: 11px; color: var(--muted);
   pointer-events: none; }
+.panel .actions { display: flex; gap: 6px; }
+.panel canvas.camera { height: auto; cursor: crosshair; }
+.panel canvas.obstacle-map { height: 480px; cursor: default; }

@@ -41,8 +41,10 @@ public:
   void run(Request req);
 
   // Thread safe. Droppable messages are skipped while the client is behind,
-  // so a slow browser gets a lower frame rate instead of growing memory.
-  void send(Payload data, bool binary, bool droppable);
+  // so a slow browser gets a lower frame rate instead of growing memory. A
+  // droppable message with a key replaces a waiting one with the same key,
+  // so the browser always gets the newest frame of a topic, not an old one.
+  void send(Payload data, bool binary, bool droppable, std::string key = {});
   uint64_t id() const {return id_;}
 
 private:
@@ -54,6 +56,8 @@ private:
   {
     Payload data;
     bool binary;
+    bool droppable;
+    std::string key;
   };
 
   boost::beast::websocket::stream<boost::beast::tcp_stream> ws_;

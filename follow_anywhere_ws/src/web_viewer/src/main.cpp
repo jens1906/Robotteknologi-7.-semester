@@ -4,22 +4,35 @@
 //
 // Browser -> server (text JSON):
 //   {"op":"sub","topic":"/x"}   {"op":"unsub","topic":"/x"}
+//   optional in sub: "hz":n      max rate of this stream, 0 = every message
+//                    "pair":"/y" (images) only send the image whose header
+//                                stamp equals a message on /y, "" = unpair
+//   {"op":"calibrate","track_id":7}   {"op":"clear_leader"}
 // Server -> browser:
 //   text   {"op":"hello","defaults":[...]}
 //   text   {"op":"topics","topics":[["/x","pkg/msg/T"],...]}
 //   text   {"op":"subscribed","topic":"/x","type":"...","kind":"image|cloud|json"}
 //   text   {"op":"msg","topic":"/x","data":{...}}           (kind json)
 //   text   {"op":"error","topic":"/x","error":"..."}
+//   text   {"op":"result","success":true,"message":"..."}   (calibrate, clear_leader)
 //   binary [u8 kind][u8 0][u16le topic_len][topic][pad to 4][payload]
 //          kind 1 = JPEG, 2 = PNG, 3 = float32 x,y,z,intensity points
+//          kind 1 and 2 start the payload with [u32 sec][u32 nanosec] of the
+//          image header stamp
 
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 
 #include <ament_index_cpp/get_package_share_path.hpp>
+#include <follow_anywhere_interfaces/srv/perception_calibrate_leader.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include "encoders.hpp"
 #include "msg_json.hpp"
@@ -54,20 +67,47 @@ std::string json_field(const std::string & js, const std::string & key)
   return v;
 }
 
+bool has_field(const std::string & js, const std::string & key)
+{
+  return js.find("\"" + key + "\"") != std::string::npos;
+}
+
+// Header stamp of a message that starts with std_msgs/Header, read straight
+// from the CDR bytes (4 byte encapsulation, then int32 sec, uint32 nanosec),
+// as sec << 32 | nanosec. 0 when the message is too short.
+uint64_t header_stamp(const rclcpp::SerializedMessage & raw)
+{
+  const auto & m = raw.get_rcl_serialized_message();
+  if (m.buffer_length < 12) {return 0;}
+  uint32_t sec, nsec;
+  std::memcpy(&sec, m.buffer + 4, 4);
+  std::memcpy(&nsec, m.buffer + 8, 4);
+  if (!(m.buffer[1] & 1)) {  // big endian CDR
+    sec = __builtin_bswap32(sec);
+    nsec = __builtin_bswap32(nsec);
+  }
+  return (static_cast<uint64_t>(sec) << 32) | nsec;
+}
+
 Payload text(std::string s) {return std::make_shared<const std::string>(std::move(s));}
 
-Payload binary_frame(uint8_t kind, const std::string & topic, const void * data, size_t size)
+Payload binary_frame(
+  uint8_t kind, const std::string & topic, const void * data, size_t size, uint64_t stamp = 0)
 {
   size_t head = 4 + topic.size();
   size_t pad = (4 - head % 4) % 4;
   auto out = std::make_shared<std::string>();
-  out->reserve(head + pad + size);
+  out->reserve(head + pad + 8 + size);
   out->push_back(static_cast<char>(kind));
   out->push_back(0);
   out->push_back(static_cast<char>(topic.size() & 0xff));
   out->push_back(static_cast<char>((topic.size() >> 8) & 0xff));
   out->append(topic);
   out->append(pad, '\0');
+  if (kind == 1 || kind == 2) {
+    uint32_t t[2] = {static_cast<uint32_t>(stamp >> 32), static_cast<uint32_t>(stamp)};
+    out->append(reinterpret_cast<const char *>(t), sizeof(t));
+  }
   out->append(static_cast<const char *>(data), size);
   return out;
 }
@@ -108,6 +148,7 @@ public:
     json_hz_ = declare_parameter<double>("json_hz", 10.0);
     max_points_ = declare_parameter<int>("max_points", 40000);
     max_array_ = declare_parameter<int>("max_array", 64);
+    pair_buffer_ = declare_parameter<int>("pair_buffer", 30);
     img_opt_.jpeg_quality = declare_parameter<int>("jpeg_quality", 70);
     img_opt_.max_width = declare_parameter<int>("max_width", 960);
     img_opt_.depth_max_m = declare_parameter<double>("depth_max_m", 6.0);
@@ -123,6 +164,10 @@ public:
     cb.on_open = [this](const SessionPtr & s) {on_open(s);};
     cb.on_text = [this](const SessionPtr & s, const std::string & m) {on_text(s, m);};
     cb.on_close = [this](const SessionPtr & s) {on_close(s);};
+    calibrate_client_ = create_client<follow_anywhere_interfaces::srv::PerceptionCalibrateLeader>(
+      "/perception/calibrate_leader");
+    clear_client_ = create_client<std_srvs::srv::Trigger>("/perception/clear_leader");
+
     server_ = std::make_unique<Server>(address, static_cast<uint16_t>(port), www, cb);
     server_->start();
 
@@ -147,6 +192,12 @@ private:
     std::map<uint64_t, std::weak_ptr<WsSession>> clients;
     std::chrono::steady_clock::time_point last{};
     bool warned = false;
+    double hz = -1;  // < 0: the default of its kind
+    // Paired image stream: images wait here until a message on `pair` has
+    // the same stamp. Guarded by pair_mtx (and mtx_ when written).
+    std::mutex pair_mtx;
+    std::string pair;
+    std::deque<std::pair<uint64_t, std::shared_ptr<const rclcpp::SerializedMessage>>> held;
   };
 
   // ------------------------------------------------------------ sessions
@@ -180,10 +231,23 @@ private:
   void on_text(const SessionPtr & s, const std::string & msg)
   {
     auto op = json_field(msg, "op");
+    if (op == "calibrate") {
+      auto id = json_field(msg, "track_id");
+      calibrate(s, id.empty() ? -1 : static_cast<int32_t>(std::strtol(id.c_str(), nullptr, 10)));
+      return;
+    }
+    if (op == "clear_leader") {
+      clear_leader(s);
+      return;
+    }
     auto topic = json_field(msg, "topic");
     if (topic.empty()) {return;}
     if (op == "sub") {
-      subscribe(s, topic);
+      std::optional<double> hz;
+      std::optional<std::string> pair;
+      if (has_field(msg, "hz")) {hz = std::strtod(json_field(msg, "hz").c_str(), nullptr);}
+      if (has_field(msg, "pair")) {pair = json_field(msg, "pair");}
+      subscribe(s, topic, hz, pair);
     } else if (op == "unsub") {
       std::lock_guard<std::mutex> lk(mtx_);
       auto it = streams_.find(topic);
@@ -204,9 +268,52 @@ private:
     s->send(text(m), false, false);
   }
 
+  // ------------------------------------------------------------ services
+
+  void calibrate(const SessionPtr & s, int32_t track_id)
+  {
+    using Srv = follow_anywhere_interfaces::srv::PerceptionCalibrateLeader;
+    if (!calibrate_client_->service_is_ready()) {
+      send_result(s, false, "/perception/calibrate_leader is not available");
+      return;
+    }
+    auto req = std::make_shared<Srv::Request>();
+    req->track_id = track_id;
+    std::weak_ptr<WsSession> weak = s;
+    calibrate_client_->async_send_request(req, [this, weak](rclcpp::Client<Srv>::SharedFuture f) {
+        if (auto sp = weak.lock()) {send_result(sp, f.get()->success, f.get()->message);}
+      });
+  }
+
+  void clear_leader(const SessionPtr & s)
+  {
+    using Srv = std_srvs::srv::Trigger;
+    if (!clear_client_->service_is_ready()) {
+      send_result(s, false, "/perception/clear_leader is not available");
+      return;
+    }
+    std::weak_ptr<WsSession> weak = s;
+    clear_client_->async_send_request(std::make_shared<Srv::Request>(),
+      [this, weak](rclcpp::Client<Srv>::SharedFuture f) {
+        if (auto sp = weak.lock()) {send_result(sp, f.get()->success, f.get()->message);}
+      });
+  }
+
+  void send_result(const SessionPtr & s, bool success, const std::string & message)
+  {
+    std::string m = "{\"op\":\"result\",\"success\":";
+    m += success ? "true" : "false";
+    m += ",\"message\":";
+    json_escape(m, message);
+    m += '}';
+    s->send(text(m), false, false);
+  }
+
   // ------------------------------------------------------- subscriptions
 
-  void subscribe(const SessionPtr & s, const std::string & topic)
+  void subscribe(
+    const SessionPtr & s, const std::string & topic, std::optional<double> hz,
+    std::optional<std::string> pair)
   {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = streams_.find(topic);
@@ -229,7 +336,7 @@ private:
         opts.callback_group = st->group;
         st->sub = create_generic_subscription(topic, st->type, rclcpp::SensorDataQoS(),
           [this, weak](std::shared_ptr<const rclcpp::SerializedMessage> m) {
-            if (auto sp = weak.lock()) {on_message(*sp, *m);}
+            if (auto sp = weak.lock()) {on_message(*sp, m);}
           }, opts);
       } catch (const std::exception & e) {
         send_error(s, topic, std::string("cannot subscribe: ") + e.what());
@@ -238,7 +345,14 @@ private:
       RCLCPP_INFO(get_logger(), "streaming %s [%s]", topic.c_str(), st->type.c_str());
       it = streams_.emplace(topic, st).first;
     }
-    it->second->clients[s->id()] = s;
+    auto & st = *it->second;
+    st.clients[s->id()] = s;
+    if (hz) {st.hz = *hz;}
+    if (pair && (st.kind == Kind::Image || st.kind == Kind::Compressed)) {
+      std::lock_guard<std::mutex> plk(st.pair_mtx);
+      st.pair = *pair;
+      st.held.clear();
+    }
 
     std::string m = "{\"op\":\"subscribed\",\"topic\":";
     json_escape(m, topic);
@@ -250,14 +364,57 @@ private:
     s->send(text(m), false, false);
   }
 
-  void on_message(Stream & st, const rclcpp::SerializedMessage & raw)
+  void on_message(Stream & st, const std::shared_ptr<const rclcpp::SerializedMessage> & raw)
   {
-    double hz = st.kind == Kind::Json ? json_hz_ :
+    {
+      std::lock_guard<std::mutex> plk(st.pair_mtx);
+      if (!st.pair.empty()) {
+        st.held.emplace_back(header_stamp(*raw), raw);
+        while (st.held.size() > static_cast<size_t>(pair_buffer_)) {st.held.pop_front();}
+        return;
+      }
+    }
+
+    double hz = st.hz >= 0 ? st.hz : st.kind == Kind::Json ? json_hz_ :
       (st.kind == Kind::Cloud || st.kind == Kind::Scan) ? cloud_hz_ : image_hz_;
     auto now = std::chrono::steady_clock::now();
     if (hz > 0 && now - st.last < std::chrono::duration<double>(1.0 / hz)) {return;}
     st.last = now;
 
+    send_paired_images(st.topic, header_stamp(*raw));
+    publish(st, *raw);
+  }
+
+  // Images paired to `topic` that have this stamp are sent now, so they reach
+  // the browser just before the message they belong to.
+  void send_paired_images(const std::string & topic, uint64_t stamp)
+  {
+    std::vector<std::shared_ptr<Stream>> paired;
+    {
+      std::lock_guard<std::mutex> lk(mtx_);
+      for (auto & [name, st] : streams_) {
+        if (st->pair == topic) {paired.push_back(st);}
+      }
+    }
+    for (auto & st : paired) {
+      std::shared_ptr<const rclcpp::SerializedMessage> image;
+      {
+        std::lock_guard<std::mutex> plk(st->pair_mtx);
+        auto & held = st->held;
+        for (auto it = held.begin(); it != held.end(); ++it) {
+          if (it->first == stamp) {
+            image = it->second;
+            held.erase(held.begin(), std::next(it));
+            break;
+          }
+        }
+      }
+      if (image) {publish(*st, *image);}
+    }
+  }
+
+  void publish(Stream & st, const rclcpp::SerializedMessage & raw)
+  {
     std::vector<SessionPtr> clients;
     {
       std::lock_guard<std::mutex> lk(mtx_);
@@ -279,7 +436,7 @@ private:
               warn_once(st, clients, "unsupported image encoding '" + img.encoding + "'");
               return;
             }
-            out = binary_frame(1, st.topic, jpg.data(), jpg.size());
+            out = binary_frame(1, st.topic, jpg.data(), jpg.size(), header_stamp(raw));
             break;
           }
         case Kind::Compressed: {
@@ -290,7 +447,7 @@ private:
               return;
             }
             uint8_t k = img.format.find("png") != std::string::npos ? 2 : 1;
-            out = binary_frame(k, st.topic, img.data.data(), img.data.size());
+            out = binary_frame(k, st.topic, img.data.data(), img.data.size(), header_stamp(raw));
             break;
           }
         case Kind::Cloud: {
@@ -325,7 +482,7 @@ private:
       warn_once(st, clients, std::string("decode failed: ") + e.what());
       return;
     }
-    for (auto & s : clients) {s->send(out, is_binary, true);}
+    for (auto & s : clients) {s->send(out, is_binary, true, st.topic);}
   }
 
   void warn_once(Stream & st, const std::vector<SessionPtr> & clients, const std::string & err)
@@ -372,7 +529,7 @@ private:
   }
 
   double image_hz_, cloud_hz_, json_hz_;
-  int64_t max_points_, max_array_;
+  int64_t max_points_, max_array_, pair_buffer_;
   ImageOptions img_opt_;
   std::vector<std::string> defaults_;
 
@@ -386,6 +543,9 @@ private:
   std::map<uint64_t, std::weak_ptr<WsSession>> sessions_;
   std::string last_topics_;
   rclcpp::TimerBase::SharedPtr topics_timer_;
+  rclcpp::Client<follow_anywhere_interfaces::srv::PerceptionCalibrateLeader>::SharedPtr
+    calibrate_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr clear_client_;
   std::unique_ptr<Server> server_;
 };
 

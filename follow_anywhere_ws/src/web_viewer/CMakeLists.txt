@@ -15,6 +15,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(follow_anywhere_interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 find_package(Boost REQUIRED)
@@ -30,6 +32,8 @@ target_include_directories(web_viewer PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(web_viewer
   rclcpp::rclcpp
   ${sensor_msgs_TARGETS}
+  ${std_srvs_TARGETS}
+  ${follow_anywhere_interfaces_TARGETS}
   ament_index_cpp::ament_index_cpp
   ${rosidl_typesupport_introspection_cpp_TARGETS}
   Boost::headers

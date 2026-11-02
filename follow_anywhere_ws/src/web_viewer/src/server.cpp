@@ -138,6 +138,8 @@ void WsSession::run(Request req)
 {
   ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
   ws_.write_buffer_bytes(1 << 16);
+  beast::error_code nodelay_ec;
+  beast::get_lowest_layer(ws_).socket().set_option(tcp::no_delay(true), nodelay_ec);
   ws_.async_accept(req, [self = shared_from_this()](beast::error_code ec) {
       if (ec) {return;}
       self->open_ = true;
@@ -147,13 +149,24 @@ void WsSession::run(Request req)
     });
 }
 
-void WsSession::send(Payload data, bool binary, bool droppable)
+void WsSession::send(Payload data, bool binary, bool droppable, std::string key)
 {
   net::post(ws_.get_executor(),
-    [self = shared_from_this(), data = std::move(data), binary, droppable]() mutable {
+    [self = shared_from_this(), data = std::move(data), binary, droppable,
+    key = std::move(key)]() mutable {
       if (self->closed_) {return;}
+      if (droppable && !key.empty()) {
+        // The front is being written once open, so only replace behind it.
+        for (size_t i = self->open_ ? 1 : 0; i < self->queue_.size(); ++i) {
+          auto & q = self->queue_[i];
+          if (q.droppable && q.key == key) {
+            q.data = std::move(data);
+            return;
+          }
+        }
+      }
       if (droppable && self->queue_.size() >= self->max_queue_) {return;}
-      self->queue_.push_back({std::move(data), binary});
+      self->queue_.push_back({std::move(data), binary, droppable, std::move(key)});
       if (self->open_ && self->queue_.size() == 1) {self->do_write();}
     });
 }
