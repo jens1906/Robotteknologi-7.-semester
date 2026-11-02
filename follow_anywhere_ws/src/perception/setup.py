@@ -1,4 +1,5 @@
 from glob import glob
+from os.path import isfile
 
 from setuptools import find_packages, setup
 
@@ -14,7 +15,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
-        ('share/' + package_name + '/models', glob('resource/models/*')),
+        ('share/' + package_name + '/models',
+            [path for path in glob('resource/models/*') if isfile(path)]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
