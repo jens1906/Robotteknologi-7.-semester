@@ -1,0 +1,60 @@
+# Parameters of tmp_lidar_node. Loaded by launch/tmp_lidar.launch.py (paramsFile:=... to use another).
+# Frames: everything published is in base_link (x forward, y left). Units: m, s, rad. Write floats with a decimal point.
+# Origin of values: MEASURED = from the Go2 / its bag, COPIED = same as perception_params.yaml or 2dSim's
+# perception.yaml, GUESS = engineering judgement, never tuned.
+tmp_lidar:
+  ros__parameters:
+    baseFrame: base_link
+
+    # --- topics ---------------------------------------------------------------------------------
+    cloudTopic: /utlidar/cloud_base           # PointCloud2 in base_link, robot body already cut out
+    odometryTopic: /utlidar/robot_odom
+    cameraLeaderTopic: /perception/camera/leader        # perception_node's output, remapped
+    cameraObstaclesTopic: /perception/camera/obstacles
+    leaderTopic: /perception/leader                     # what navigation reads
+    obstaclesTopic: /perception/obstacles
+    scanTopic: /perception/scan
+    debugTopic: /perception/lidar_debug
+    publishDebug: true
+
+    # --- cloud filter ---------------------------------------------------------------------------
+    floorZ: -0.32               # MEASURED: floor in base_link, standing Go2 (/sportmodestate body_height ~0.32)
+    estimateFloor: true         # measure the floor each cloud (5th percentile of z near the robot) ...
+    floorSearch: 0.15           # GUESS: ... kept within floorZ +- this
+    groundHeight: 0.05          # COPIED: m above the floor that counts as floor
+    maxHeight: 1.9              # GUESS: m above the floor; higher (ceilings, overhangs) is ignored
+    bodyBoxMin: [-0.45, -0.2]   # COPIED from the Gazebo lidar emulator: base_link box of the robot itself
+    bodyBoxMax: [0.45, 0.2]
+    rangeMin: 0.35              # COPIED: Unitree crops the body out to about this
+    obstacleMaxRange: 6.0       # COPIED: m, farther points are ignored
+    accumulateFrames: 2         # GUESS: clouds merged (in odom); the L1 gives ~4k points per cloud. More = denser, but people smear
+
+    # --- clusters -------------------------------------------------------------------------------
+    cellSize: 0.1               # GUESS: grid cell; points in touching cells are one obstacle
+    minClusterPoints: 3         # GUESS: fewer points = noise
+    maxClusterRadius: 0.6       # GUESS: larger clusters (walls) are cut ...
+    wallChunk: 0.5              # GUESS: ... into pieces this size, each its own (static) obstacle
+
+    # --- tracking (velocity over the ground, in odom) -------------------------------------------
+    trackGate: 0.5              # GUESS: m a cluster may move between clouds and keep its id
+    velocityAlpha: 0.3          # GUESS: weight of each new velocity measurement (1 = unfiltered)
+    minimumSpeed: 0.15          # COPIED: m/s, slower (or slower than 2 sigma) is published as 0
+    trackTimeout: 1.0           # COPIED: s without a cluster before its track is dropped
+    unknownVelocitySigma: 1.5   # COPIED: m/s, velocity sigma before the second sighting
+    staticVelocitySigma: 0.1    # GUESS: m/s, velocity sigma of wall pieces (velocity 0)
+    odometryTimeout: 0.5        # COPIED: s without odometry before velocities count as unknown
+
+    # --- fusion with the camera -----------------------------------------------------------------
+    matchGate: 0.5              # GUESS: m, camera point to nearest lidar point of a cluster ...
+    matchSigmas: 3.0            # GUESS: ... or this many of the camera's position sigmas, whichever is larger
+    stickyBonus: 0.2            # GUESS: m off the cost of the leader's cluster of the last cloud
+    leaderHoldTime: 1.0         # GUESS: s the LOST leader's cluster is still the leader's (not an obstacle)
+    lidarRangeStd: [0.02, 0.005]       # COPIED (2dSim, Unitree L1 spec): std = a + b * range
+    minimumPositionUncertainty: 0.05   # COPIED: m, published at least this
+    cameraPosition: [0.30, 0.0]        # COPIED (go2_mounts.yaml camera_link): start of the line of sight
+    cameraTimeout: 0.5          # GUESS: s, older camera messages are not used (lidar only)
+    lidarTimeout: 0.5           # GUESS: s without a cloud before camera messages are passed through unchanged
+    clockOffsetWindow: 5.0      # COPIED: s of odometry over which the Go2 clock offset is taken
+
+    # --- scan -----------------------------------------------------------------------------------
+    scanRays: 720
