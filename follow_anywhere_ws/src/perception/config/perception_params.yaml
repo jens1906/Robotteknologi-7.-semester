@@ -52,16 +52,6 @@ perception_node:
     loseAfterChecks: 2                       # GUESS: checks in a row that say "different person" before the leader is dropped
     recentDistanceTime: 2.0                  # NEW, untested: s a distance stays printed under a box
 
-    # --- camera mounting: base_link -> camera_link (m, rad, roll/pitch/yaw as static_transform_publisher; negative pitch
-    # --- = tilted up). Written by `ros2 run perception calibrate_camera`; perception.launch.py publishes it as a static
-    # --- TF (read by the launch file and calibrate_camera, not by the node) ---------------------
-    cameraX: 0.355                           # GUESS: 350-360 mm ahead of the power button (~ base_link centre), not calibrated yet
-    cameraY: 0.0
-    cameraZ: 0.135                           # GUESS: 70-80 mm above the power button, the trunk top is ~0.06 m above base_link
-    cameraRoll: 0.0
-    cameraPitch: -0.524                      # GUESS: tilted ~30 deg up
-    cameraYaw: 0.0
-
     # --- 3D position ----------------------------------------------------------------------------
     depthMin: 0.3                            # m, depth outside this range is not used
     depthMax: 8.0
@@ -89,19 +79,3 @@ perception_node:
     personRadiusMax: 0.4                     # GUESS: m, largest radius (arms out make the box wide)
     obstacleMaxRange: 6.0                   # m, farther points are ignored
     groundHeight: 0.05                       # m above the ground plane that counts as ground
-
-# Settings of `ros2 run perception calibrate_camera` (camera_calibration_node.py), which writes cameraX..cameraYaw above.
-# It reads this section itself, so no --params-file is needed. Scene and use: README, "Camera calibration".
-camera_calibration:
-  ros__parameters:
-    lidarCloudCount: 150                     # GUESS: lidar clouds stacked (~10 s at 15 Hz); the robot must stand still meanwhile
-    depthFrameCount: 30                      # GUESS: newest depth frames merged by per-pixel median
-    depthMin: 0.5                            # MEASURED: m, the lidar has nothing closer
-    depthMax: 4.5                            # GUESS: m, the D455 depth error grows with distance squared; the corner sits at ~3 m
-    voxelSize: 0.03                          # GUESS: m, camera points are averaged per cube of this size
-    patchSizes: [0.4, 0.2, 0.1]              # MEASURED (0.1 m lidar patches flat on a still floor) / GUESS: m, coarse to fine; the first must cover the start mount's error
-    maximumResidual: 0.025                   # GUESS: m, robust sigma of the point-to-plane distances (lidar noise alone is ~0.01)
-    minimumMatchedPoints: 2000               # GUESS: camera points on lidar surfaces (a count: most of the tilted view has no lidar)
-    minimumDirectionPoints: 100              # CHOSEN: ~ camera points on surfaces facing the weakest direction; synthetic room: walls only 15-35, with the board 208-257
-    maximumChangeDistance: 0.15              # GUESS: m, a result farther from the saved (tape) mount is a wrong match: not saved
-    maximumChangeAngle: 0.26                 # GUESS: rad (15 deg), same for the rotation

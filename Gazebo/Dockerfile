@@ -105,63 +105,6 @@ cmake.write_text(text.replace(anchor, anchor + '\n' + shim, 1))
 print('champ_base CMakeLists.txt patched successfully')
 PYEOF
 
-# Port CHAMP to Lyrical:
-# - ament_target_dependencies() was removed from ament_cmake, but champ_base
-#   still uses it. Inject a minimal stand-in (only defined when the real one
-#   is missing) right after find_package(ament_cmake).
-# - The deprecated .h headers of tf2 / tf2_ros / message_filters / urdf were
-#   removed; rewrite those includes to the .hpp versions.
-RUN python3 - <<'PYEOF'
-import pathlib, re
-
-include_re = re.compile(
-    r'(#include\s*[<"](?:tf2|tf2_ros|message_filters|urdf)/[^>"]*)\.h([>"])')
-for pkg in ('champ', 'champ_base'):
-    for src in pathlib.Path(f'src/{pkg}').rglob('*'):
-        if src.suffix in ('.h', '.hpp', '.cpp') and src.is_file():
-            text = src.read_text()
-            new = include_re.sub(r'\1.hpp\2', text)
-            if new != text:
-                src.write_text(new)
-print('CHAMP includes rewritten to .hpp')
-
-# message_filters::Subscriber::subscribe() now requires an explicit QoS.
-# rclcpp::QoS(10) equals the old default (reliable, keep last 10).
-src = pathlib.Path('src/champ_base/src/state_estimation.cpp')
-text = src.read_text()
-new = re.sub(r'(_subscriber_\.subscribe\([^;]*?"\w+")\);',
-             r'\1, rclcpp::QoS(10));', text)
-assert new != text
-src.write_text(new)
-print('state_estimation.cpp subscribe() calls patched')
-
-shim = '''
-if(NOT COMMAND ament_target_dependencies)
-  function(ament_target_dependencies target)
-    foreach(dep ${ARGN})
-      if(NOT ${dep}_FOUND)
-        message(FATAL_ERROR "ament_target_dependencies(): '${dep}' not found")
-      endif()
-      if(${dep}_TARGETS)
-        target_link_libraries(${target} ${${dep}_TARGETS})
-      else()
-        target_include_directories(${target} PUBLIC ${${dep}_INCLUDE_DIRS})
-        target_link_libraries(${target} ${${dep}_LIBRARIES})
-      endif()
-      target_compile_definitions(${target} PUBLIC ${${dep}_DEFINITIONS})
-    endforeach()
-  endfunction()
-endif()
-'''
-
-cmake = pathlib.Path('src/champ_base/CMakeLists.txt')
-text = cmake.read_text()
-anchor = 'find_package(ament_cmake REQUIRED)'
-assert anchor in text
-cmake.write_text(text.replace(anchor, anchor + '\n' + shim, 1))
-print('champ_base CMakeLists.txt patched successfully')
-PYEOF
-
 # ---- Our ROS2 packages ----
 COPY Gazebo/upstream/unitree_ros/robots/go2_description/ /upstream/go2_description/
 COPY Gazebo/src/go2_description/    src/go2_description/

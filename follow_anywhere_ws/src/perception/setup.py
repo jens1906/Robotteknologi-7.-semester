@@ -1,5 +1,4 @@
 from glob import glob
-from os.path import isfile
 
 from setuptools import find_packages, setup
 
@@ -15,8 +14,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
-        ('share/' + package_name + '/models',
-            [path for path in glob('resource/models/*') if isfile(path)]),
+        ('share/' + package_name + '/models', glob('resource/models/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -33,7 +31,6 @@ setup(
         'console_scripts': [
             # perception_node.main does not exist yet: `ros2 run` / the launch file fail until it is written
             'perception_node = perception.perception_node:main',
-            'calibrate_camera = perception.camera_calibration_node:main',
         ],
     },
 )

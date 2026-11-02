@@ -10,7 +10,7 @@ add_compile_options(-Wall -Wextra)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(follow_anywhere_interfaces REQUIRED)
+find_package(perception_msgs REQUIRED)
 find_package(unitree_api REQUIRED)
 find_package(Eigen3 REQUIRED)
 
@@ -38,7 +38,7 @@ endif()
 
 add_executable(follow_leader_cpp src/main.cpp)
 target_link_libraries(follow_leader_cpp Eigen3::Eigen ${OSQP_TARGET} rclcpp::rclcpp
-  ${follow_anywhere_interfaces_TARGETS} ${unitree_api_TARGETS})
+  ${perception_msgs_TARGETS} ${unitree_api_TARGETS})
 
 install(TARGETS follow_leader_cpp DESTINATION lib/${PROJECT_NAME})
 

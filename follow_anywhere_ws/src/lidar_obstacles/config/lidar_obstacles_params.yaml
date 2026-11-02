@@ -1,0 +1,25 @@
+# Parameters of the lidar obstacles node. Loaded by launch/lidar_obstacles.launch.py (paramsFile:=... to use another).
+# Frames: everything is in base_link (x forward, y left, z up). Units: m, s.
+# Topic names are not parameters: they are written in lidar_obstacles_node.cpp (change them with a remapping in the launch file).
+lidar_obstacles_node:
+  ros__parameters:
+    # --- lidar points ---------------------------------------------------------------------------
+    minRange: 0.15                           # m, horizontal; closer points are ignored
+    maxRange: 6.0                            # m, horizontal; farther points are ignored
+    minObstacleHeight: -0.20                 # m in base_link; lower points count as ground
+    maxObstacleHeight: 1.0                   # m in base_link; higher points are ignored
+
+    # --- clustering -----------------------------------------------------------------------------
+    cellSize: 0.10                           # m, grid cell edge
+    minPointsPerCell: 2                      # fewer points in a cell: noise
+    minClusterPoints: 5                      # fewer points in a cluster: no obstacle
+    lidarPositionUncertainty: 0.10           # m, 1 sigma of a lidar obstacle position
+
+    # --- camera people --------------------------------------------------------------------------
+    matchDistance: 0.5                       # m, a cluster this close to a predicted person belongs to that person
+    maxCameraAge: 0.5                        # s, older camera obstacles / leader are not used
+
+    # --- odometry -------------------------------------------------------------------------------
+    odometryTimeout: 0.5                     # s without odometry before the robot counts as standing still
+    clockOffsetWindow: 5.0                   # s of odometry over which the Go2 clock offset is taken (smallest offset)
+    poseHistorySeconds: 1.0                  # s of robot poses kept to move people to the lidar time
