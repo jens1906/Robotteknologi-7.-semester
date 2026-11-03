@@ -26,7 +26,9 @@ const LEADER_COLOR = '#00dc00';
 const NOTICE_COLOR = '#ffa500';
 const LABEL_TEXT_COLOR = '#000';
 const CLICK_MARKER_COLOR = '#ffdc00';
-const OBSTACLE_COLOR = '#ff8c3a';
+const DYNAMIC_OBSTACLE_COLOR = '#ff8c3a';
+const STATIC_OBSTACLE_COLOR = '#4fa3ff';
+const COMBINED_OBSTACLE_COLOR = '#c58cff';
 const STATE_COLORS = ['#ffffff', '#ffdc00', '#00dc00', '#ffa500', '#ff3c3c'];
 const CERTAIN_COLOR = '#3fb950';
 const UNSURE_COLOR = '#e3b341';
@@ -73,17 +75,29 @@ class PerceptionView {
     this.missingTopics = new Set();
     this.isExactMode = true;
     this.cameraPanel = new CameraPanel(this);
-    this.obstacleMapPanel = new ObstacleMapPanel();
+    this.combinedObstacleMapPanel = new ObstacleMapPanel('Obstacle map: combined', COMBINED_OBSTACLE_COLOR);
+    this.staticObstacleMapPanel = new ObstacleMapPanel('Obstacle map: static', STATIC_OBSTACLE_COLOR);
+    this.dynamicObstacleMapPanel = new ObstacleMapPanel('Obstacle map: dynamic', DYNAMIC_OBSTACLE_COLOR);
+    this.obstacleMapPanels = [this.dynamicObstacleMapPanel, this.staticObstacleMapPanel, this.combinedObstacleMapPanel];
     openView(this);
 
     // Input topics
     this.Subscribe('/perception/debug_frame', { hz: 0 },
       (debugFrame) => this.cameraPanel.HandleDebugFrame(debugFrame));
     this.Subscribe('/perception/obstacles', { hz: 0 },
-      (obstacleArray) => this.obstacleMapPanel.HandleObstacles(obstacleArray));
-    this.Subscribe('/perception/leader', { hz: 0 },
-      (leader) => this.obstacleMapPanel.HandleLeader(leader));
+      (obstacleArray) => this.dynamicObstacleMapPanel.HandleObstacles(obstacleArray));
+    this.Subscribe('/perception/obstacles_static', { hz: 0 },
+      (obstacleArray) => this.staticObstacleMapPanel.HandleObstacles(obstacleArray));
+    this.Subscribe('/perception/obstacles_combined', { hz: 0 },
+      (obstacleArray) => this.combinedObstacleMapPanel.HandleObstacles(obstacleArray));
+    this.Subscribe('/perception/leader', { hz: 0 }, (leader) => this.HandleLeader(leader));
     this.SubscribeCameraImage();
+  }
+
+  HandleLeader(leader) {
+    for (const obstacleMapPanel of this.obstacleMapPanels) {
+      obstacleMapPanel.HandleLeader(leader);
+    }
   }
 
   HandleTopicList(topicNames) {
@@ -138,7 +152,9 @@ class PerceptionView {
   Close() {
     closeView(this);
     this.cameraPanel.Destroy();
-    this.obstacleMapPanel.Destroy();
+    for (const obstacleMapPanel of this.obstacleMapPanels) {
+      obstacleMapPanel.Destroy();
+    }
   }
 }
 
@@ -342,7 +358,8 @@ class CameraPanel {
 }
 
 class ObstacleMapPanel {
-  constructor() {
+  constructor(title, obstacleColor) {
+    this.obstacleColor = obstacleColor;
     this.obstacles = [];
     this.leader = null;
     this.obstaclesArrivalSeconds = 0;
@@ -350,7 +367,7 @@ class ObstacleMapPanel {
     this.mapRangeMeters = MAP_RANGE_METERS;
     this.isDrawScheduled = false;
 
-    const panelParts = CreatePanelElement('Obstacle map', false);
+    const panelParts = CreatePanelElement(title, false);
     this.element = panelParts.element;
     this.meta = panelParts.meta;
     this.canvas = document.createElement('canvas');
@@ -427,7 +444,7 @@ class ObstacleMapPanel {
     const nowSeconds = NowSeconds();
     context.globalAlpha = nowSeconds - this.obstaclesArrivalSeconds > MAP_STALE_SECONDS ? MAP_STALE_OPACITY : 1;
     for (const obstacle of this.obstacles) {
-      DrawObstacle(context, mapFrame, obstacle);
+      DrawObstacle(context, mapFrame, obstacle, this.obstacleColor);
     }
     context.globalAlpha = nowSeconds - this.leaderArrivalSeconds > MAP_STALE_SECONDS ? MAP_STALE_OPACITY : 1;
     if (this.leader !== null) {
@@ -641,18 +658,18 @@ function DrawMapRobot(context, mapFrame) {
   context.fill();
 }
 
-function DrawObstacle(context, mapFrame, obstacle) {
+function DrawObstacle(context, mapFrame, obstacle, obstacleColor) {
   if (!IsValidPoint(obstacle.closest_point)) {
     return;
   }
   const obstaclePixels = ConvertToMapPixels(mapFrame, obstacle.closest_point);
-  DrawUncertaintyCircle(context, mapFrame, obstaclePixels, obstacle.position_uncertainty, OBSTACLE_COLOR);
-  DrawMapDot(context, obstaclePixels, OBSTACLE_COLOR, true);
-  DrawVelocityArrow(context, mapFrame, obstaclePixels, obstacle.velocity, OBSTACLE_COLOR);
+  DrawUncertaintyCircle(context, mapFrame, obstaclePixels, obstacle.position_uncertainty, obstacleColor);
+  DrawMapDot(context, obstaclePixels, obstacleColor, true);
+  DrawVelocityArrow(context, mapFrame, obstaclePixels, obstacle.velocity, obstacleColor);
   if (IsValidPoint(obstacle.line_of_sight_point)) {
     const lineOfSightPixels = ConvertToMapPixels(mapFrame, obstacle.line_of_sight_point);
     context.lineWidth = 2;
-    context.strokeStyle = OBSTACLE_COLOR;
+    context.strokeStyle = obstacleColor;
     context.beginPath();
     context.moveTo(lineOfSightPixels.x - 4, lineOfSightPixels.y - 4);
     context.lineTo(lineOfSightPixels.x + 4, lineOfSightPixels.y + 4);
