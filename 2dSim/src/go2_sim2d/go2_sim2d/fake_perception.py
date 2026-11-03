@@ -1,4 +1,4 @@
-"""Stands in for the perception stack: detections made from the sim's ground truth.
+"""Stands in for the perception stack: leader and obstacles made from the sim's ground truth.
 
 Works only from the ground-truth topics and the scene file (for the static
 objects and the movers' sizes), not from sim internals.
@@ -8,8 +8,9 @@ Subscribes (ground truth):
   /sim/people    (geometry_msgs/PoseArray)  scene order; the leader is the one named "leader"
   /sim/movers    (geometry_msgs/PoseArray)  scene order
 Publishes (what the real perception stack will publish):
-  /perception/detections  (perception_msgs/DetectionArray)  base_link, `rate` Hz
-  /perception/scan        (sensor_msgs/LaserScan)           base_link, 360 deg, `scan_rate` Hz
+  /perception/leader      (follow_anywhere_interfaces/PerceptionLeader)         base_link, `rate` Hz
+  /perception/obstacles   (follow_anywhere_interfaces/PerceptionObstacleArray)  base_link, `rate` Hz
+  /perception/scan        (sensor_msgs/LaserScan)  base_link, 360 deg, `scan_rate` Hz
 
 Noise, sensor fields and the other parameters: perception.Params and
 config/perception.yaml.
@@ -18,14 +19,16 @@ config/perception.yaml.
 import dataclasses
 import math
 
-from geometry_msgs.msg import PoseArray
+from follow_anywhere_interfaces.msg import (PerceptionLeader, PerceptionObstacle,
+                                            PerceptionObstacleArray)
+from geometry_msgs.msg import Point, PoseArray, Vector3
 from nav_msgs.msg import Odometry
-from perception_msgs.msg import Detection, DetectionArray
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 
 from go2_sim2d.common import run, stamp_seconds, yaw_of
-from go2_sim2d.perception import Entity, FakePerception, Params, VelocityTracker
+from go2_sim2d.perception import (Entity, FakePerception, LeaderTracker, Params,
+                                  VelocityTracker)
 from go2_sim2d.world import World
 
 
@@ -46,6 +49,9 @@ class FakePerceptionNode(Node):
         self.world = World(self.get_parameter('world').value)
         self.perception = FakePerception(params, seed if seed >= 0 else None)
         self.tracker = VelocityTracker()
+        self.leader_tracker = LeaderTracker()
+        self.leader_id = (self.world.person_id(self.world.leader_index)
+                          if self.world.leader_index is not None else None)
         self._robot = None
         self._people = []
         self._movers = []
@@ -53,9 +59,10 @@ class FakePerceptionNode(Node):
         self.create_subscription(Odometry, '/sim/odometry', self._odom_cb, 10)
         self.create_subscription(PoseArray, '/sim/people', self._people_cb, 10)
         self.create_subscription(PoseArray, '/sim/movers', self._movers_cb, 10)
-        self.detections_pub = self.create_publisher(DetectionArray, '/perception/detections', 10)
+        self.leader_pub = self.create_publisher(PerceptionLeader, '/perception/leader', 10)
+        self.obstacles_pub = self.create_publisher(PerceptionObstacleArray, '/perception/obstacles', 10)
         self.scan_pub = self.create_publisher(LaserScan, '/perception/scan', 10)
-        self.create_timer(1.0 / self.get_parameter('rate').value, self._publish_detections)
+        self.create_timer(1.0 / self.get_parameter('rate').value, self._publish_perception)
         self.create_timer(1.0 / self.get_parameter('scan_rate').value, self._publish_scan)
 
         self.get_logger().info(
@@ -95,31 +102,39 @@ class FakePerceptionNode(Node):
                      for i, (shape, p) in enumerate(zip(shapes, self._people))]
         return entities
 
-    def _publish_detections(self) -> None:
+    def _publish_perception(self) -> None:
         if self._robot is None:
             return
         now = self.get_clock().now()
-        msg = DetectionArray()
-        msg.header.stamp = now.to_msg()
+        t = now.nanoseconds * 1e-9
+        detections = self.perception.detect(self._robot, self._entities(), t)
+        leader, obstacles = self.leader_tracker.update(detections, self.leader_id, self._robot, t)
+
+        stamp = now.to_msg()
+        msg = PerceptionLeader()
+        msg.header.stamp = stamp
         msg.header.frame_id = 'base_link'
-        for d in self.perception.detect(self._robot, self._entities(), now.nanoseconds * 1e-9):
-            out = Detection()
-            out.id = d.id
-            out.class_id = d.class_id
-            out.confidence = float(d.confidence)
-            out.sensors = d.sensors
-            out.range = float(d.range)
-            out.bearing = float(d.bearing)
-            out.range_std = float(d.range_std)
-            out.bearing_std = float(d.bearing_std)
-            out.nearest_range = float(d.nearest_range)
-            out.nearest_bearing = float(d.nearest_bearing)
-            out.radius = float(d.radius)
-            out.velocity.x, out.velocity.y = map(float, d.velocity)
-            out.velocity_std = float(d.velocity_std)
-            out.moving = d.moving
-            msg.detections.append(out)
-        self.detections_pub.publish(msg)
+        msg.status = leader.status
+        msg.closest_point = _point(leader.closest_point)
+        msg.velocity = _vector(leader.velocity)
+        msg.position_uncertainty = float(leader.position_uncertainty)
+        msg.velocity_uncertainty = float(leader.velocity_uncertainty)
+        msg.lost_duration = float(leader.lost_duration)
+        msg.last_known_point = _point(leader.last_known_point)
+        self.leader_pub.publish(msg)
+
+        array = PerceptionObstacleArray()
+        array.header.stamp = stamp
+        array.header.frame_id = 'base_link'
+        for o in obstacles:
+            out = PerceptionObstacle()
+            out.closest_point = _point(o.closest_point)
+            out.line_of_sight_point = _point(o.line_of_sight_point)
+            out.velocity = _vector(o.velocity)
+            out.position_uncertainty = float(o.position_uncertainty)
+            out.velocity_uncertainty = float(o.velocity_uncertainty)
+            array.obstacles.append(out)
+        self.obstacles_pub.publish(array)
 
     def _publish_scan(self) -> None:
         if self._robot is None:
@@ -138,6 +153,14 @@ class FakePerceptionNode(Node):
         msg.range_max = float(p.lidar_range_max)
         msg.ranges = ranges.astype(float).tolist()
         self.scan_pub.publish(msg)
+
+
+def _point(xy):
+    return Point(x=float(xy[0]), y=float(xy[1]), z=0.0)
+
+
+def _vector(xy):
+    return Vector3(x=float(xy[0]), y=float(xy[1]), z=0.0)
 
 
 def main():
