@@ -54,6 +54,7 @@ struct LidarObstaclesSettings
   double odometryTimeout = 0.5;
   double clockOffsetWindow = 5.0;
   double poseHistorySeconds = 1.0;
+  double cloudHistorySeconds = 0.35;
 };
 
 // Data structures
@@ -79,6 +80,13 @@ struct RobotPose
   double positionX = 0.0;
   double positionY = 0.0;
   double heading = 0.0;
+};
+
+struct StoredCloud
+{
+  double seconds = 0.0;
+  RobotPose robotPose;
+  std::vector<Point> points;
 };
 
 struct ClockSample
@@ -217,6 +225,7 @@ public:
     settings.odometryTimeout = declare_parameter("odometryTimeout", defaults.odometryTimeout);
     settings.clockOffsetWindow = declare_parameter("clockOffsetWindow", defaults.clockOffsetWindow);
     settings.poseHistorySeconds = declare_parameter("poseHistorySeconds", defaults.poseHistorySeconds);
+    settings.cloudHistorySeconds = declare_parameter("cloudHistorySeconds", defaults.cloudHistorySeconds);
 
     // Output topics
     staticObstaclesPublisher = create_publisher<PerceptionObstacleArray>("/perception/obstacles_static", 10);
@@ -258,6 +267,7 @@ private:
       PublishDebugMessage("odometry back, pose history restarted");
       clockSamples.clear();
       poseHistory.clear();
+      cloudHistory.clear();
     }
     lastOdometryArrivalSeconds = arrivalSeconds;
     double correctedSeconds = CorrectStamp(ConvertStampToSeconds(odometryMessage->header.stamp), arrivalSeconds);
@@ -268,6 +278,7 @@ private:
         return;
       }
       poseHistory.clear();
+      cloudHistory.clear();
     }
     const auto &orientation = odometryMessage->pose.pose.orientation;
     RobotPose robotPose;
@@ -303,7 +314,7 @@ private:
     std::vector<LidarCluster> lidarClusters;
     try
     {
-      lidarClusters = FindLidarClusters(*cloudMessage);
+      lidarClusters = FindLidarClusters(MergeRecentClouds(ReadCloudPoints(*cloudMessage), lidarTime.seconds()));
     }
     catch (const std::runtime_error &error)
     {
@@ -357,29 +368,64 @@ private:
     return InterpolateRobotPose(*std::prev(laterPose), *laterPose, seconds);
   }
 
-  std::vector<LidarCluster> FindLidarClusters(const sensor_msgs::msg::PointCloud2 &cloud)
+  std::vector<Point> ReadCloudPoints(const sensor_msgs::msg::PointCloud2 &cloud)
   {
-    std::unordered_map<int64_t, GridCell> gridCells;
+    std::vector<Point> cloudPoints;
     sensor_msgs::PointCloud2ConstIterator<float> iteratorX(cloud, "x");
     sensor_msgs::PointCloud2ConstIterator<float> iteratorY(cloud, "y");
     sensor_msgs::PointCloud2ConstIterator<float> iteratorZ(cloud, "z");
     for (; iteratorX != iteratorX.end(); ++iteratorX, ++iteratorY, ++iteratorZ)
     {
-      double pointX = *iteratorX;
-      double pointY = *iteratorY;
-      double pointZ = *iteratorZ;
-      if (!std::isfinite(pointX) || !std::isfinite(pointY) || !std::isfinite(pointZ))
+      Point cloudPoint;
+      cloudPoint.x = *iteratorX;
+      cloudPoint.y = *iteratorY;
+      cloudPoint.z = *iteratorZ;
+      if (!std::isfinite(cloudPoint.x) || !std::isfinite(cloudPoint.y) || !std::isfinite(cloudPoint.z) ||
+          cloudPoint.z < settings.minObstacleHeight || cloudPoint.z > settings.maxObstacleHeight)
       {
         continue;
       }
-      double horizontalDistance = std::hypot(pointX, pointY);
-      if (horizontalDistance < settings.minRange || horizontalDistance > settings.maxRange ||
-          pointZ < settings.minObstacleHeight || pointZ > settings.maxObstacleHeight)
+      cloudPoints.push_back(cloudPoint);
+    }
+    return cloudPoints;
+  }
+
+  std::vector<Point> MergeRecentClouds(const std::vector<Point> &cloudPoints, double lidarSeconds)
+  {
+    std::optional<RobotPose> robotPoseNow = FindRobotPose(lidarSeconds);
+    if (!robotPoseNow)
+    {
+      cloudHistory.clear();
+      return cloudPoints;
+    }
+    cloudHistory.push_back({lidarSeconds, *robotPoseNow, cloudPoints});
+    while (cloudHistory.size() > 1 && cloudHistory.front().seconds < lidarSeconds - settings.cloudHistorySeconds)
+    {
+      cloudHistory.pop_front();
+    }
+    std::vector<Point> mergedPoints;
+    for (const StoredCloud &storedCloud : cloudHistory)
+    {
+      for (const Point &storedPoint : storedCloud.points)
+      {
+        mergedPoints.push_back(MovePointBetweenPoses(storedPoint, storedCloud.robotPose, *robotPoseNow));
+      }
+    }
+    return mergedPoints;
+  }
+
+  std::vector<LidarCluster> FindLidarClusters(const std::vector<Point> &cloudPoints)
+  {
+    std::unordered_map<int64_t, GridCell> gridCells;
+    for (const Point &cloudPoint : cloudPoints)
+    {
+      double horizontalDistance = std::hypot(cloudPoint.x, cloudPoint.y);
+      if (horizontalDistance < settings.minRange || horizontalDistance > settings.maxRange)
       {
         continue;
       }
-      int cellX = static_cast<int>(std::floor(pointX / settings.cellSize));
-      int cellY = static_cast<int>(std::floor(pointY / settings.cellSize));
+      int cellX = static_cast<int>(std::floor(cloudPoint.x / settings.cellSize));
+      int cellY = static_cast<int>(std::floor(cloudPoint.y / settings.cellSize));
       GridCell &gridCell = gridCells[MakeCellKey(cellX, cellY)];
       gridCell.cellX = cellX;
       gridCell.cellY = cellY;
@@ -387,8 +433,8 @@ private:
       if (horizontalDistance < gridCell.closestDistance)
       {
         gridCell.closestDistance = horizontalDistance;
-        gridCell.closestPoint.x = pointX;
-        gridCell.closestPoint.y = pointY;
+        gridCell.closestPoint.x = cloudPoint.x;
+        gridCell.closestPoint.y = cloudPoint.y;
         gridCell.closestPoint.z = 0.0;
       }
     }
@@ -614,6 +660,7 @@ private:
 
   // Robot odometry
   std::deque<RobotPose> poseHistory;
+  std::deque<StoredCloud> cloudHistory;
   std::deque<ClockSample> clockSamples;
   double clockOffsetSeconds = NOT_A_NUMBER;
   double lastOdometryArrivalSeconds = NOT_A_NUMBER;
