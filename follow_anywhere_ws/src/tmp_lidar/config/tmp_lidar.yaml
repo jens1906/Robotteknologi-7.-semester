@@ -12,7 +12,8 @@ tmp_lidar:
     cameraLeaderTopic: /perception/camera/leader        # perception_node's output, remapped
     cameraObstaclesTopic: /perception/camera/obstacles
     leaderTopic: /perception/leader                     # what navigation reads
-    obstaclesTopic: /perception/obstacles
+    staticObstaclesTopic: /perception/obstacles_static       # lidar-only clusters
+    combinedObstaclesTopic: /perception/obstacles_combined   # lidar + camera people
     scanTopic: /perception/scan
     debugTopic: /perception/lidar_debug
     publishDebug: true
