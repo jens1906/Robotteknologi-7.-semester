@@ -17,9 +17,12 @@
 // clockOffsetWindow (as perception's ClockOffsetEstimator); with it the camera messages (stamped on this
 // computer) are moved to the cloud's time, and the outputs are stamped on this computer's clock, because
 // navigation measures message age against its own now().
-// The fusion runs once per cloud. While no cloud arrived for lidarTimeout, camera messages are passed through
+// The fusion runs once per cloud (cloudsPerUpdate > 1: every that many clouds). A nearly empty cloud is skipped and
+// the last outputs are repeated (CloudGate). /perception/scan is made from the published obstacles (scanFromObstacles)
+// or from the points of the last scanClouds clouds, held in odom. While no cloud arrived for lidarTimeout, camera messages are passed through
 // unchanged, so the system still works without the lidar.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -42,6 +45,7 @@
 #include "visualization_msgs/msg/marker_array.hpp"
 
 #include "tmp_lidar/cloud_filter.hpp"
+#include "tmp_lidar/cloud_gate.hpp"
 #include "tmp_lidar/cluster_tracker.hpp"
 #include "tmp_lidar/clustering.hpp"
 #include "tmp_lidar/fusion.hpp"
@@ -336,6 +340,16 @@ public:
 
     // --- scan, debug
     scanRays_ = static_cast<int>(declare_parameter("scanRays", static_cast<int64_t>(720)));
+    cloudsPerUpdate_ = std::max(1, static_cast<int>(declare_parameter("cloudsPerUpdate", static_cast<int64_t>(1))));
+    scanFromObstacles_ = declare_parameter("scanFromObstacles", true);
+    scanClouds_ = std::max(1, static_cast<int>(declare_parameter("scanClouds", static_cast<int64_t>(2))));
+    CloudGateParams gateParams;
+    gateParams.minFraction = declare_parameter("emptyCloudFraction", gateParams.minFraction);
+    gateParams.minPoints = static_cast<std::size_t>(
+      declare_parameter("emptyCloudPoints", static_cast<int64_t>(gateParams.minPoints)));
+    gateParams.maxSkipped = static_cast<int>(
+      declare_parameter("maxSkippedClouds", static_cast<int64_t>(gateParams.maxSkipped)));
+    cloudGate_ = CloudGate(gateParams);
     publishDebug_ = declare_parameter("publishDebug", true);
 
     // Odometry first, so each executor cycle has the newest pose before the cloud that uses it.
@@ -370,6 +384,9 @@ private:
       poses_.clear();
       hitGrid_.clear();
       tracker_.reset();
+      recentClouds_.clear();
+      cloudsSinceUpdate_ = 0;
+      cloudGate_.reset();
     }
     lastOdometryArrival_ = arrival;
     const double stamp = toSeconds(msg.header.stamp);
@@ -416,6 +433,13 @@ private:
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "cloud without float x/y/z fields, ignored");
       return;
     }
+    // --- empty / nearly empty cloud (dropped data): skip it, repeat the last output so nothing blinks
+    if (pose && !cloudGate_.accept(cloud.size())) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+        "cloud with %zu points (typical %.0f): skipped, last output repeated", cloud.size(), cloudGate_.typical());
+      repeatLastOutput(stamp);
+      return;
+    }
     const GroundPlane plane = ground_.update(cloud, filter_);
     const FilterResult filtered = filterCloud(cloud, filter_, plane);
 
@@ -431,6 +455,19 @@ private:
       hitGrid_.clear();
     }
     hitGrid_.add(odomPoints, cloudTime);
+
+    // --- update every cloudsPerUpdate clouds (default every cloud; the tracker's missWindow already ignores an
+    // object missing from a single cloud). The last scanClouds clouds are kept in odom for a point scan.
+    if (pose) {
+      recentClouds_.push_back(std::move(odomPoints));
+      while (static_cast<int>(recentClouds_.size()) > std::max(cloudsPerUpdate_, scanClouds_)) {
+        recentClouds_.pop_front();
+      }
+      if (++cloudsSinceUpdate_ < cloudsPerUpdate_) {return;}
+    } else {
+      recentClouds_.clear();
+    }
+    cloudsSinceUpdate_ = 0;
     const auto occupied = pose ? hitGrid_.occupiedStampedPoints(cloudTime) :
       hitGrid_.occupiedStampedPoints(cloudTime, 1);
     std::vector<StampedPoint> nearby;   // in range of the current base_link
@@ -449,11 +486,30 @@ private:
     FusionInput input = buildCameraInput(arrival, robot, pose.has_value());
     const FusionOutput fused = fusion_.fuse(input, steady, robot, cloudTime);
 
+    lastLeader_.reset();
     if (input.haveCamera) {
-      leaderPub_->publish(buildLeaderMessage(fused.leader, stamp));
+      lastLeader_ = buildLeaderMessage(fused.leader, stamp);
+      leaderPub_->publish(*lastLeader_);
     }
-    obstaclesPub_->publish(buildObstaclesMessage(fused, stamp));
-    scanPub_->publish(buildScan(filtered.points, stamp));
+    lastObstacles_ = buildObstaclesMessage(fused, stamp);
+    obstaclesPub_->publish(*lastObstacles_);
+    std::vector<float> ranges;
+    if (scanFromObstacles_) {
+      ranges = tmp_lidar::buildScan(steady, scanRays_, filter_.rangeMin, filter_.rangeMax);
+    } else {
+      std::vector<Point2> scanPoints;   // the last scanClouds clouds, in the current base_link
+      if (pose) {
+        const int skip = static_cast<int>(recentClouds_.size()) - scanClouds_;
+        for (std::size_t k = static_cast<std::size_t>(std::max(0, skip)); k < recentClouds_.size(); ++k) {
+          for (const auto & q : recentClouds_[k]) {scanPoints.push_back(robot.toBase(q));}
+        }
+      } else {
+        scanPoints = filtered.points;
+      }
+      ranges = tmp_lidar::buildScan(scanPoints, scanRays_, filter_.rangeMin, filter_.rangeMax);
+    }
+    lastScan_ = scanMessage(std::move(ranges), stamp);
+    scanPub_->publish(*lastScan_);
     if (debugPub_) {debugPub_->publish(buildMarkers(steady, fused, plane, stamp));}
 
     std::size_t coasting = 0;
@@ -542,7 +598,24 @@ private:
     return msg;
   }
 
-  LaserScan buildScan(const std::vector<Point2> & points, const builtin_interfaces::msg::Time & stamp)
+  // The last published messages again, with a new stamp (a skipped cloud).
+  void repeatLastOutput(const builtin_interfaces::msg::Time & stamp)
+  {
+    if (lastLeader_) {
+      lastLeader_->header.stamp = stamp;
+      leaderPub_->publish(*lastLeader_);
+    }
+    if (lastObstacles_) {
+      lastObstacles_->header.stamp = stamp;
+      obstaclesPub_->publish(*lastObstacles_);
+    }
+    if (lastScan_) {
+      lastScan_->header.stamp = stamp;
+      scanPub_->publish(*lastScan_);
+    }
+  }
+
+  LaserScan scanMessage(std::vector<float> ranges, const builtin_interfaces::msg::Time & stamp)
   {
     LaserScan msg;
     msg.header.stamp = stamp;
@@ -553,7 +626,7 @@ private:
     msg.angle_max = static_cast<float>(-M_PI + (scanRays_ - 1) * step);
     msg.range_min = static_cast<float>(filter_.rangeMin);
     msg.range_max = static_cast<float>(filter_.rangeMax);
-    msg.ranges = tmp_lidar::buildScan(points, scanRays_, filter_.rangeMin, filter_.rangeMax);
+    msg.ranges = std::move(ranges);
     return msg;
   }
 
@@ -585,7 +658,7 @@ private:
       m.header.stamp = stamp;
       m.header.frame_id = baseFrame_;
       m.ns = "clusters";
-      m.id = static_cast<int>(i);
+      m.id = c.trackId >= 0 ? c.trackId : static_cast<int>(i);   // stable per track in RViz
       m.type = Marker::CYLINDER;
       m.pose.position.x = c.centroid.x;
       m.pose.position.y = c.centroid.y;
@@ -623,7 +696,7 @@ private:
 
       Marker label = text;
       label.ns = "tracks";
-      label.id = static_cast<int>(i);
+      label.id = m.id;
       label.pose.position.x = c.centroid.x;
       label.pose.position.y = c.centroid.y;
       label.pose.position.z = 1.15;
@@ -646,6 +719,9 @@ private:
   double lidarTimeout_ = 0.5;
   double odometryTimeout_ = 0.5;
   int scanRays_ = 720;
+  int cloudsPerUpdate_ = 1;
+  bool scanFromObstacles_ = true;
+  int scanClouds_ = 2;
   bool publishDebug_ = true;
 
   // state
@@ -653,6 +729,12 @@ private:
   PoseHistory poses_;
   GroundEstimator ground_;
   HitGrid hitGrid_;
+  std::deque<std::vector<Point2>> recentClouds_;   // odom obstacle points of the clouds since the last update
+  int cloudsSinceUpdate_ = 0;
+  CloudGate cloudGate_;
+  std::optional<PerceptionLeader> lastLeader_;
+  std::optional<PerceptionObstacleArray> lastObstacles_;
+  std::optional<LaserScan> lastScan_;
   bool warnedNoOdometry_ = false;
   ClusterTracker tracker_;
   Fusion fusion_;

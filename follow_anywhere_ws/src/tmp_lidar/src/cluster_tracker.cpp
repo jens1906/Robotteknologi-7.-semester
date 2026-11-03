@@ -254,7 +254,10 @@ void ClusterTracker::update(std::vector<Cluster> & clusters, const Pose2 & robot
     double pd = detectionProbability(nearestRange(now));
     track.occluded = isOccluded(track, nearest, robot);
     if (track.occluded) {pd *= params_.occludedDetectionFactor;}
-    track.existence = bayesMissed(track.existence, pd, params_.falseAlarmProbability);
+    // A miss only counts once the track was missed in every cloud of a window of missWindow clouds.
+    if (++track.missStreak % std::max(1, params_.missWindow) == 0) {
+      track.existence = bayesMissed(track.existence, pd, params_.falseAlarmProbability);
+    }
   }
 
   // --- seen tracks and new tracks
@@ -275,6 +278,7 @@ void ClusterTracker::update(std::vector<Cluster> & clusters, const Pose2 & robot
       const double pd = std::max(1e-3, detectionProbability(norm(c.closest)));
       track->existence = bayesSeen(track->existence, pd, pfa);
       ++track->sightings;
+      track->missStreak = 0;
     } else {
       Track fresh;
       fresh.id = nextId_++;
