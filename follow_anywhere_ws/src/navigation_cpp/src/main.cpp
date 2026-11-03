@@ -383,8 +383,8 @@ public:
     leader_arr[0] += leader_arr[2] * leader_age;
     leader_arr[1] += leader_arr[3] * leader_age;
     std::array<double, 4> speed_limit = {
-        2.0, 1.0, 0.0,
-        1.0}; // full_vision, partial_vision, poor_vision, heading_limit
+        0.5, 0.2, 0.0,
+        0.5}; // full_vision, partial_vision, poor_vision, heading_limit
 
     for (int r = 0; r < 3; ++r) {
       A_c.emplace_back(add_row(x0[r], x0[r]), xi(r, 0), 1.0);
