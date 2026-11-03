@@ -1,8 +1,8 @@
 """Full perception: the camera part (perception package) + the lidar part and fusion (tmp_lidar).
 
 perception_node's /perception/leader and /perception/obstacles are remapped to /perception/camera/*;
-tmp_lidar_node publishes the fused /perception/leader, /perception/obstacles and /perception/scan in their place,
-so navigation runs unchanged. Every argument of perception.launch.py is passed through.
+tmp_lidar_node publishes the fused /perception/leader, /perception/obstacles_static (lidar only),
+/perception/obstacles_combined (lidar + camera people) and /perception/scan. Every argument of perception.launch.py is passed through.
 
     ros2 launch tmp_lidar perception_fused.launch.py
     ros2 launch tmp_lidar perception_fused.launch.py startCamera:=false useSimTime:=true   # rosbag with --clock

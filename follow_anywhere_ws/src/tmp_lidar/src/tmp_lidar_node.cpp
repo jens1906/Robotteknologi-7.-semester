@@ -7,7 +7,8 @@
 //   /perception/camera/obstacles  follow_anywhere_interfaces/PerceptionObstacleArray  (perception_node, remapped)
 // Publishes (what navigation reads; same topics and types as 2dSim's fake_perception):
 //   /perception/leader      PerceptionLeader         enriched with the lidar
-//   /perception/obstacles   PerceptionObstacleArray  camera people (enriched) + lidar-only clusters, no duplicates
+//   /perception/obstacles_static    PerceptionObstacleArray  lidar-only clusters (no camera person, not the leader)
+//   /perception/obstacles_combined  PerceptionObstacleArray  camera people (enriched) + lidar-only clusters, no duplicates
 //   /perception/scan        sensor_msgs/LaserScan    360 deg, obstacle points of the newest cloud
 //   /perception/lidar_debug visualization_msgs/MarkerArray  clusters (grey static, green person, blue leader)
 // Every topic name is a parameter.
@@ -226,7 +227,10 @@ public:
     const auto cameraLeaderTopic = declare_parameter<std::string>("cameraLeaderTopic", "/perception/camera/leader");
     const auto cameraObstaclesTopic = declare_parameter<std::string>("cameraObstaclesTopic", "/perception/camera/obstacles");
     const auto leaderTopic = declare_parameter<std::string>("leaderTopic", "/perception/leader");
-    const auto obstaclesTopic = declare_parameter<std::string>("obstaclesTopic", "/perception/obstacles");
+    const auto staticObstaclesTopic =
+      declare_parameter<std::string>("staticObstaclesTopic", "/perception/obstacles_static");
+    const auto combinedObstaclesTopic =
+      declare_parameter<std::string>("combinedObstaclesTopic", "/perception/obstacles_combined");
     const auto scanTopic = declare_parameter<std::string>("scanTopic", "/perception/scan");
     const auto debugTopic = declare_parameter<std::string>("debugTopic", "/perception/lidar_debug");
     baseFrame_ = declare_parameter<std::string>("baseFrame", "base_link");
@@ -364,12 +368,13 @@ public:
         [this](PerceptionObstacleArray::ConstSharedPtr msg) {handleCameraObstacles(msg);});
 
     leaderPub_ = create_publisher<PerceptionLeader>(leaderTopic, 10);
-    obstaclesPub_ = create_publisher<PerceptionObstacleArray>(obstaclesTopic, 10);
+    staticObstaclesPub_ = create_publisher<PerceptionObstacleArray>(staticObstaclesTopic, 10);
+    combinedObstaclesPub_ = create_publisher<PerceptionObstacleArray>(combinedObstaclesTopic, 10);
     scanPub_ = create_publisher<LaserScan>(scanTopic, 10);
     if (publishDebug_) {debugPub_ = create_publisher<MarkerArray>(debugTopic, 10);}
 
-    RCLCPP_INFO(get_logger(), "tmp_lidar: %s + %s -> %s, %s, %s", cloudTopic.c_str(), cameraLeaderTopic.c_str(),
-      leaderTopic.c_str(), obstaclesTopic.c_str(), scanTopic.c_str());
+    RCLCPP_INFO(get_logger(), "tmp_lidar: %s + %s -> %s, %s, %s, %s", cloudTopic.c_str(), cameraLeaderTopic.c_str(),
+      leaderTopic.c_str(), staticObstaclesTopic.c_str(), combinedObstaclesTopic.c_str(), scanTopic.c_str());
   }
 
 private:
@@ -406,7 +411,12 @@ private:
   {
     cameraObstacles_ = msg;
     cameraObstaclesArrival_ = nowSeconds();
-    if (lidarStale()) {obstaclesPub_->publish(*msg);}
+    if (lidarStale()) {   // no lidar: camera only, nothing static
+      combinedObstaclesPub_->publish(*msg);
+      PerceptionObstacleArray empty;
+      empty.header = msg->header;
+      staticObstaclesPub_->publish(empty);
+    }
   }
 
   bool lidarStale() {return lastCloudArrival_ < 0.0 || nowSeconds() - lastCloudArrival_ > lidarTimeout_;}
@@ -491,8 +501,10 @@ private:
       lastLeader_ = buildLeaderMessage(fused.leader, stamp);
       leaderPub_->publish(*lastLeader_);
     }
-    lastObstacles_ = buildObstaclesMessage(fused, stamp);
-    obstaclesPub_->publish(*lastObstacles_);
+    lastStaticObstacles_ = buildObstaclesMessage(fused, stamp, true);
+    staticObstaclesPub_->publish(*lastStaticObstacles_);
+    lastCombinedObstacles_ = buildObstaclesMessage(fused, stamp, false);
+    combinedObstaclesPub_->publish(*lastCombinedObstacles_);
     std::vector<float> ranges;
     if (scanFromObstacles_) {
       ranges = tmp_lidar::buildScan(steady, scanRays_, filter_.rangeMin, filter_.rangeMax);
@@ -579,14 +591,16 @@ private:
     return msg;
   }
 
+  // lidarOnly: only the lidar-only clusters (the static output); otherwise every fused obstacle.
   PerceptionObstacleArray buildObstaclesMessage(const FusionOutput & fused,
-    const builtin_interfaces::msg::Time & stamp)
+    const builtin_interfaces::msg::Time & stamp, bool lidarOnly)
   {
     PerceptionObstacleArray msg;
     msg.header.stamp = stamp;
     msg.header.frame_id = baseFrame_;
     msg.obstacles.reserve(fused.obstacles.size());
     for (const auto & o : fused.obstacles) {
+      if (lidarOnly && o.source != Source::Lidar) {continue;}
       PerceptionObstacle out;
       out.closest_point = toPointMsg(o.data.closest);
       out.line_of_sight_point = toPointMsg(o.data.lineOfSight);
@@ -605,9 +619,13 @@ private:
       lastLeader_->header.stamp = stamp;
       leaderPub_->publish(*lastLeader_);
     }
-    if (lastObstacles_) {
-      lastObstacles_->header.stamp = stamp;
-      obstaclesPub_->publish(*lastObstacles_);
+    if (lastStaticObstacles_) {
+      lastStaticObstacles_->header.stamp = stamp;
+      staticObstaclesPub_->publish(*lastStaticObstacles_);
+    }
+    if (lastCombinedObstacles_) {
+      lastCombinedObstacles_->header.stamp = stamp;
+      combinedObstaclesPub_->publish(*lastCombinedObstacles_);
     }
     if (lastScan_) {
       lastScan_->header.stamp = stamp;
@@ -733,7 +751,8 @@ private:
   int cloudsSinceUpdate_ = 0;
   CloudGate cloudGate_;
   std::optional<PerceptionLeader> lastLeader_;
-  std::optional<PerceptionObstacleArray> lastObstacles_;
+  std::optional<PerceptionObstacleArray> lastStaticObstacles_;
+  std::optional<PerceptionObstacleArray> lastCombinedObstacles_;
   std::optional<LaserScan> lastScan_;
   bool warnedNoOdometry_ = false;
   ClusterTracker tracker_;
@@ -751,7 +770,8 @@ private:
   rclcpp::Subscription<PerceptionLeader>::SharedPtr cameraLeaderSub_;
   rclcpp::Subscription<PerceptionObstacleArray>::SharedPtr cameraObstaclesSub_;
   rclcpp::Publisher<PerceptionLeader>::SharedPtr leaderPub_;
-  rclcpp::Publisher<PerceptionObstacleArray>::SharedPtr obstaclesPub_;
+  rclcpp::Publisher<PerceptionObstacleArray>::SharedPtr staticObstaclesPub_;
+  rclcpp::Publisher<PerceptionObstacleArray>::SharedPtr combinedObstaclesPub_;
   rclcpp::Publisher<LaserScan>::SharedPtr scanPub_;
   rclcpp::Publisher<MarkerArray>::SharedPtr debugPub_;
 };
