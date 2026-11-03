@@ -256,27 +256,62 @@ public:
     // --- clustering
     ClusterParams clusterParams;
     clusterParams.cellSize = declare_parameter("cellSize", clusterParams.cellSize);
+    clusterParams.linkDistance = declare_parameter("linkDistance", clusterParams.linkDistance);
+    clusterParams.linkAngle = declare_parameter("linkAngle", clusterParams.linkAngle);
     clusterParams.minClusterPoints = static_cast<int>(
       declare_parameter("minClusterPoints", static_cast<int64_t>(clusterParams.minClusterPoints)));
+    clusterParams.minClusterPointsFar = static_cast<int>(
+      declare_parameter("minClusterPointsFar", static_cast<int64_t>(clusterParams.minClusterPointsFar)));
+    clusterParams.farRange = filter_.rangeMax;
     clusterParams.maxClusterRadius = declare_parameter("maxClusterRadius", clusterParams.maxClusterRadius);
     clusterParams.chunkSize = declare_parameter("wallChunk", clusterParams.chunkSize);
+    clusterParams.freshWindow = declare_parameter("freshWindow", clusterParams.freshWindow);
+    clusterParams.minFreshPoints = static_cast<int>(
+      declare_parameter("minFreshPoints", static_cast<int64_t>(clusterParams.minFreshPoints)));
     clusterParams_ = clusterParams;
 
     // --- tracking
     TrackerParams trackerParams;
-    trackerParams.trackGate = declare_parameter("trackGate", trackerParams.trackGate);
-    trackerParams.velocityAlpha = declare_parameter("velocityAlpha", trackerParams.velocityAlpha);
-    trackerParams.minimumSpeed = declare_parameter("minimumSpeed", trackerParams.minimumSpeed);
-    trackerParams.trackTimeout = declare_parameter("trackTimeout", trackerParams.trackTimeout);
-    trackerParams.unknownVelocitySigma = declare_parameter("unknownVelocitySigma", trackerParams.unknownVelocitySigma);
-    trackerParams.staticVelocitySigma = declare_parameter("staticVelocitySigma", trackerParams.staticVelocitySigma);
-    trackerParams.confirmHits = static_cast<int>(
-      declare_parameter("confirmHits", static_cast<int64_t>(trackerParams.confirmHits)));
-    trackerParams.coastTime = declare_parameter("coastTime", trackerParams.coastTime);
-    trackerParams.coastTimeFar = declare_parameter("coastTimeFar", trackerParams.coastTimeFar);
-    trackerParams.coastFarRange = declare_parameter("coastFarRange", trackerParams.coastFarRange);
-    trackerParams.coastSigmaRate = declare_parameter("coastSigmaRate", trackerParams.coastSigmaRate);
-    tracker_ = ClusterTracker(trackerParams);
+    auto & tp = trackerParams;
+    tp.gateChi2 = declare_parameter("gateChi2", tp.gateChi2);
+    tp.minimumGate = declare_parameter("minimumGate", tp.minimumGate);
+    tp.maximumGate = declare_parameter("maximumGate", tp.maximumGate);
+    tp.mergeRadius = declare_parameter("mergeRadius", tp.mergeRadius);
+    tp.shapeSigmaScale = declare_parameter("shapeSigmaScale", tp.shapeSigmaScale);
+    tp.staleCentroidSigma = declare_parameter("staleCentroidSigma", tp.staleCentroidSigma);
+    tp.noiseAdaptRate = declare_parameter("noiseAdaptRate", tp.noiseAdaptRate);
+    tp.maxNoiseScale = declare_parameter("maxNoiseScale", tp.maxNoiseScale);
+    tp.velocitySightings = static_cast<int>(
+      declare_parameter("velocitySightings", static_cast<int64_t>(tp.velocitySightings)));
+    tp.imm.staticPositionNoise = declare_parameter("staticPositionNoise", tp.imm.staticPositionNoise);
+    tp.imm.cvAccelerationNoise = declare_parameter("cvAccelerationNoise", tp.imm.cvAccelerationNoise);
+    tp.imm.ctAccelerationNoise = declare_parameter("ctAccelerationNoise", tp.imm.ctAccelerationNoise);
+    tp.imm.ctTurnNoise = declare_parameter("ctTurnNoise", tp.imm.ctTurnNoise);
+    tp.imm.modeSwitchRate = declare_parameter("modeSwitchRate", tp.imm.modeSwitchRate);
+    tp.minimumSpeed = declare_parameter("minimumSpeed", tp.minimumSpeed);
+    tp.staticPublishProbability = declare_parameter("staticPublishProbability", tp.staticPublishProbability);
+    tp.unknownVelocitySigma = declare_parameter("unknownVelocitySigma", tp.unknownVelocitySigma);
+    tp.minimumVelocitySigma = declare_parameter("minimumVelocitySigma", tp.minimumVelocitySigma);
+    tp.staticVelocitySigma = declare_parameter("staticVelocitySigma", tp.staticVelocitySigma);
+    tp.birthExistence = declare_parameter("birthExistence", tp.birthExistence);
+    tp.maxExistence = declare_parameter("maxExistence", tp.maxExistence);
+    tp.confirmExistence = declare_parameter("confirmExistence", tp.confirmExistence);
+    tp.keepExistence = declare_parameter("keepExistence", tp.keepExistence);
+    tp.deleteExistence = declare_parameter("deleteExistence", tp.deleteExistence);
+    tp.detectionProbabilityNear = declare_parameter("detectionProbabilityNear", tp.detectionProbabilityNear);
+    tp.detectionProbabilityFar = declare_parameter("detectionProbabilityFar", tp.detectionProbabilityFar);
+    tp.detectionNearRange = declare_parameter("detectionNearRange", tp.detectionNearRange);
+    tp.detectionFarRange = declare_parameter("detectionFarRange", tp.detectionFarRange);
+    tp.falseAlarmProbability = declare_parameter("falseAlarmProbability", tp.falseAlarmProbability);
+    tp.falseAlarmPoints = static_cast<int>(
+      declare_parameter("falseAlarmPoints", static_cast<int64_t>(tp.falseAlarmPoints)));
+    tp.occludedDetectionFactor = declare_parameter("occludedDetectionFactor", tp.occludedDetectionFactor);
+    tp.occlusionMargin = declare_parameter("occlusionMargin", tp.occlusionMargin);
+    tp.trackTimeout = declare_parameter("trackTimeout", tp.trackTimeout);
+    tp.occludedTimeout = declare_parameter("occludedTimeout", tp.occludedTimeout);
+    tp.maxPositionSigma = declare_parameter("maxPositionSigma", tp.maxPositionSigma);
+    tp.rangeMin = filter_.rangeMin;
+    tp.rangeMax = filter_.rangeMax;
 
     // --- fusion
     FusionParams fusionParams;
@@ -293,6 +328,8 @@ public:
         std::vector<double>{fusionParams.cameraPosition.x, fusionParams.cameraPosition.y});
     if (camera.size() >= 2) {fusionParams.cameraPosition = {camera[0], camera[1]};}
     fusion_ = Fusion(fusionParams);
+    trackerParams.lidarRangeStd = fusionParams.lidarRangeStd;
+    tracker_ = ClusterTracker(trackerParams);
     cameraTimeout_ = declare_parameter("cameraTimeout", 0.5);
     lidarTimeout_ = declare_parameter("lidarTimeout", 0.5);
     odometryTimeout_ = declare_parameter("odometryTimeout", 0.5);
@@ -394,11 +431,12 @@ private:
       hitGrid_.clear();
     }
     hitGrid_.add(odomPoints, cloudTime);
-    const auto occupied = pose ? hitGrid_.occupiedPoints(cloudTime) : hitGrid_.occupiedPoints(cloudTime, 1);
-    std::vector<Point2> nearby;   // in range of the current base_link
+    const auto occupied = pose ? hitGrid_.occupiedStampedPoints(cloudTime) :
+      hitGrid_.occupiedStampedPoints(cloudTime, 1);
+    std::vector<StampedPoint> nearby;   // in range of the current base_link
     nearby.reserve(occupied.size());
     for (const auto & q : occupied) {
-      const double r = norm(robot.toBase(q));
+      const double r = norm(robot.toBase(q.p));
       if (r >= filter_.rangeMin && r <= filter_.rangeMax) {nearby.push_back(q);}
     }
 
@@ -557,7 +595,8 @@ private:
       m.scale.x = d;
       m.scale.y = d;
       m.scale.z = 1.0;
-      m.color.a = 0.6f;
+      // Opacity: how sure the tracker is the object is real.
+      m.color.a = std::isfinite(c.existence) ? static_cast<float>(0.2 + 0.6 * c.existence) : 0.6f;
       if (owner == kOwnerLeader) {
         m.color.b = 1.0f;                       // leader
       } else if (owner >= 0) {
@@ -581,6 +620,20 @@ private:
       closest.color.g = closest.color.b = 0.0f;
       closest.color.a = 1.0f;
       array.markers.push_back(closest);
+
+      Marker label = text;
+      label.ns = "tracks";
+      label.id = static_cast<int>(i);
+      label.pose.position.x = c.centroid.x;
+      label.pose.position.y = c.centroid.y;
+      label.pose.position.z = 1.15;
+      label.scale.z = 0.12;
+      static const char * const kModes[] = {"static", "CV", "turn"};
+      const char * mode = c.isChunk ? "wall" : (c.motionMode >= 0 && c.motionMode < 3 ? kModes[c.motionMode] : "?");
+      std::snprintf(buffer, sizeof buffer, "#%d %s p=%.2f %.1f m/s", c.trackId, mode,
+        std::isfinite(c.existence) ? c.existence : 0.0, norm(c.velocity));
+      label.text = buffer;
+      array.markers.push_back(label);
     }
     return array;
   }

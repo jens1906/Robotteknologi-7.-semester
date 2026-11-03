@@ -15,17 +15,21 @@ find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(follow_anywhere_interfaces REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 # Core: no ROS, so it can be unit tested on its own.
 add_library(tmp_lidar_core STATIC
+  src/assignment.cpp
   src/cloud_filter.cpp
   src/clustering.cpp
   src/cluster_tracker.cpp
   src/fusion.cpp
   src/hit_grid.cpp
+  src/motion_model.cpp
   src/scan_builder.cpp)
 target_include_directories(tmp_lidar_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(tmp_lidar_core PUBLIC Eigen3::Eigen)
 set_target_properties(tmp_lidar_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_executable(tmp_lidar_node src/tmp_lidar_node.cpp)

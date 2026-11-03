@@ -15,6 +15,7 @@
   <depend>geometry_msgs</depend>
   <depend>visualization_msgs</depend>
   <depend>follow_anywhere_interfaces</depend>
+  <depend>eigen</depend>
 
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>perception</exec_depend>

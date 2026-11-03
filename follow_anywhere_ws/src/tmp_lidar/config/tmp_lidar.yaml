@@ -41,23 +41,54 @@ tmp_lidar:
     minCellHits: 2              # GUESS: clouds that must hit a cell within memorySeconds; 1 = no speckle filter
 
     # --- clusters -------------------------------------------------------------------------------
-    cellSize: 0.1               # GUESS: grid cell; points in touching cells are one obstacle
-    minClusterPoints: 3         # GUESS: fewer points = noise
+    cellSize: 0.1               # GUESS: m, hash grid of the neighbour search (speed only)
+    linkDistance: 0.15          # GUESS: m, points closer than this are one obstacle ...
+    linkAngle: 0.04             # GUESS: rad, ... or closer than range * this (the L1 gets sparser far away)
+    minClusterPoints: 3         # GUESS: fewer points = noise (near) ...
+    minClusterPointsFar: 2      # GUESS: ... falling linearly to this at obstacleMaxRange
     maxClusterRadius: 0.6       # GUESS: larger clusters (walls) are cut ...
     wallChunk: 0.5              # GUESS: ... into pieces this size, each its own (static) obstacle
+    freshWindow: 0.0            # MEASURED (bag): s, > 0: the tracker measures the centroid of the points this new ...
+    minFreshPoints: 3           # ... when there are this many. Off: single-cloud views jumped more than the trail lags
 
-    # --- tracking (velocity over the ground, in odom) -------------------------------------------
-    trackGate: 0.5              # GUESS: m a cluster may move between clouds and keep its id
-    velocityAlpha: 0.3          # GUESS: weight of each new velocity measurement (1 = unfiltered)
+    # --- tracking: association and motion (IMM: static / constant velocity / turning, in odom) -----
+    gateChi2: 9.21              # 99 % of a 2D Gaussian: Mahalanobis gate of the predicted position
+    minimumGate: 0.25           # GUESS: m, always inside the gate ...
+    maximumGate: 0.5            # MEASURED (bag): m, ... never beyond (1.0 gave more ID jumps)
+    mergeRadius: 0.45           # GUESS: m, clusters fitting the same confirmed track are joined up to this (legs)
+    shapeSigmaScale: 0.25       # GUESS: centroid sigma += this * cluster radius (partial views)
+    staleCentroidSigma: 0.05    # GUESS: m, added when the centroid includes the memory trail (freshWindow > 0)
+    noiseAdaptRate: 0.2         # GUESS: per-track measurement noise follows the real centroid jumps ...
+    maxNoiseScale: 25.0         # GUESS: ... up to this times the modelled variance
+    staticPositionNoise: 0.05   # GUESS: m/sqrt(s), drift of a standing object
+    cvAccelerationNoise: 1.5    # GUESS: m/s^2, walking person
+    ctAccelerationNoise: 0.8    # GUESS: m/s^2
+    ctTurnNoise: 0.3            # GUESS: rad/s^2 (tuned in test: 1.0 lets the turn rate wander)
+    modeSwitchRate: 0.3         # GUESS: 1/s (tuned in test: 1.0 lets the static model drag velocities to 0)
     minimumSpeed: 0.15          # COPIED: m/s, slower (or slower than 2 sigma) is published as 0
-    trackTimeout: 1.0           # COPIED: s without a cluster before its track is dropped
+    staticPublishProbability: 0.6   # GUESS: published as 0 when the static model is this likely
     unknownVelocitySigma: 1.5   # COPIED: m/s, velocity sigma before the second sighting
+    velocitySightings: 2        # GUESS: sightings before a velocity is published (more did not help on the bag)
+    minimumVelocitySigma: 0.05  # GUESS: m/s
     staticVelocitySigma: 0.1    # GUESS: m/s, velocity sigma of wall pieces (velocity 0)
-    confirmHits: 2              # GUESS: sightings before a cluster is published
-    coastTime: 0.3              # GUESS: s a confirmed cluster missed by the lidar is still published (near the robot) ...
-    coastTimeFar: 0.8           # GUESS: ... rising linearly to this at coastFarRange (MEASURED: far objects churn 10x more)
-    coastFarRange: 5.0
-    coastSigmaRate: 0.5         # GUESS: m/s, position sigma growth while coasting
+
+    # --- tracking: persistence (Bayes existence probability per track, against flicker) -----------
+    birthExistence: 0.3         # GUESS: a new cluster; one sighting is never published
+    confirmExistence: 0.7       # GUESS: published from here (2 sightings) ...
+    keepExistence: 0.35         # GUESS: ... until it falls below this
+    deleteExistence: 0.05       # GUESS: track dropped
+    maxExistence: 0.9999        # GUESS: cap; sets misses survived in a row: ~9 near (0.6 s), far trackTimeout ends it
+    detectionProbabilityNear: 0.7   # MEASURED (bag, least flicker): far below 1 - churn as misses come in runs
+    detectionProbabilityFar: 0.4
+    detectionNearRange: 1.0
+    detectionFarRange: 5.0
+    falseAlarmProbability: 0.1  # GUESS: chance a cluster is noise ...
+    falseAlarmPoints: 6         # GUESS: ... raised for clusters of fewer points
+    occludedDetectionFactor: 0.1    # GUESS: detection probability times this when a nearer cluster hides the track
+    occlusionMargin: 0.3        # GUESS: m
+    trackTimeout: 1.0           # COPIED: s unseen before a track is dropped regardless ...
+    occludedTimeout: 3.0        # GUESS: ... or this while occluded
+    maxPositionSigma: 1.5       # GUESS: m, track dropped when its predicted position gets this uncertain
     odometryTimeout: 0.5        # COPIED: s without odometry before velocities count as unknown
 
     # --- fusion with the camera -----------------------------------------------------------------
