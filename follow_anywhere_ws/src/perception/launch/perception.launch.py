@@ -2,10 +2,8 @@
 
     ros2 launch perception perception.launch.py
     ros2 launch perception perception.launch.py startCamera:=false     # replaying a rosbag (bag has no TF)
+    ros2 launch perception perception.launch.py cameraX:=0.28 cameraZ:=0.10
     ros2 launch perception perception.launch.py startCamera:=false useSimTime:=true   # bag played with --clock
-
-The camera mounting (base_link -> camera_link) is cameraX..cameraYaw in the params file (written by
-`ros2 run perception calibrate_camera`); it is read at every start, so a new calibration is used from the next start.
 
 The Go2 lidar (/utlidar/cloud_base) and odometry (/utlidar/robot_odom) come from the robot itself;
 nothing is started for them here. Topic names are written in perception_node.py: remap them in this file if the
@@ -13,28 +11,17 @@ camera uses another name.
 """
 import os
 
-import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-# Camera mounting in the params file -> static_transform_publisher arguments
-CAMERA_MOUNT_ARGUMENTS = {'cameraX': '--x', 'cameraY': '--y', 'cameraZ': '--z',
-                          'cameraRoll': '--roll', 'cameraPitch': '--pitch', 'cameraYaw': '--yaw'}
-
-
-def StartCameraMount(context):
-    with open(LaunchConfiguration('paramsFile').perform(context)) as paramsFile:
-        nodeParameters = yaml.safe_load(paramsFile)['perception_node']['ros__parameters']
-    mountArguments = []
-    for mountName, argumentName in CAMERA_MOUNT_ARGUMENTS.items():
-        mountArguments += [argumentName, str(nodeParameters[mountName])]
-    return [Node(package='tf2_ros', executable='static_transform_publisher', name='camera_mount_tf',
-                 arguments=[*mountArguments, '--frame-id', 'base_link', '--child-frame-id', 'camera_link'])]
+# where the RealSense sits on the Go2, relative to base_link (m, rad). Not measured yet: all 0.
+CAMERA_MOUNT = {'cameraX': '0.0', 'cameraY': '0.0', 'cameraZ': '0.0',
+                'cameraRoll': '0.0', 'cameraPitch': '0.0', 'cameraYaw': '0.0'}
 
 
 def generate_launch_description():
@@ -47,6 +34,9 @@ def generate_launch_description():
                               description='start the RealSense driver (false when replaying a rosbag)'),
         DeclareLaunchArgument('useSimTime', default_value='false',
                               description='use the /clock of a rosbag played with --clock (needed with odometry in the bag)'),
+        *[DeclareLaunchArgument(name, default_value=value,
+                                description='camera mounting on base_link (m / rad), measure on the robot')
+          for name, value in CAMERA_MOUNT.items()],
     ]
 
     # colour + depth aligned to colour, 640x480 at 30 fps. Topics: /camera/camera/color/image_raw,
@@ -64,8 +54,13 @@ def generate_launch_description():
         }.items(),
         condition=IfCondition(LaunchConfiguration('startCamera')))
 
-    # base_link -> camera_link: connects the camera to the robot (the Go2 publishes no TF for it), from the params file
-    camera_mount = OpaqueFunction(function=StartCameraMount)
+    # base_link -> camera_link: connects the camera to the robot (the Go2 publishes no TF for it)
+    camera_mount = Node(
+        package='tf2_ros', executable='static_transform_publisher', name='camera_mount_tf',
+        arguments=['--x', LaunchConfiguration('cameraX'), '--y', LaunchConfiguration('cameraY'),
+                   '--z', LaunchConfiguration('cameraZ'), '--roll', LaunchConfiguration('cameraRoll'),
+                   '--pitch', LaunchConfiguration('cameraPitch'), '--yaw', LaunchConfiguration('cameraYaw'),
+                   '--frame-id', 'base_link', '--child-frame-id', 'camera_link'])
 
     # camera_link -> camera_color_optical_frame (standard optical rotation: z forward, x right, y down).
     # Live the RealSense driver publishes it; a replayed rosbag has no TF, so it is published here instead.

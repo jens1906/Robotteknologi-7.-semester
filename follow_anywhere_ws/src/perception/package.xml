@@ -21,13 +21,11 @@
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
   <depend>image_geometry</depend>
-  <depend>sensor_msgs_py</depend>
   <depend>follow_anywhere_interfaces</depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
-  <exec_depend>python3-yaml</exec_depend>
   <!-- lets the RealSense driver also publish .../image_raw/compressed (JPEG) for the viewer;
        compression only runs while someone subscribes to it -->
   <exec_depend>compressed_image_transport</exec_depend>

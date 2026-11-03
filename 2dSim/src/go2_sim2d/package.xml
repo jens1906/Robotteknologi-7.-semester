@@ -6,8 +6,8 @@
   <description>
     Top-down 2D sim of the Go2 in the go2_scenarios worlds. Kinematic robot
     with the robot's ROS interface (sport API, /utlidar/robot_odom), and
-    fake_perception, which publishes the noisy leader and obstacles
-    (follow_anywhere_interfaces) in place of the perception stack.
+    fake_perception, which publishes noisy detections of the leader, people and
+    obstacles (perception_msgs) in place of the perception stack.
   </description>
   <maintainer email="jens1906@gmail.com">jens</maintainer>
   <license>BSD-3-Clause</license>
@@ -19,7 +19,7 @@
   <depend>std_msgs</depend>
   <depend>unitree_api</depend>
   <depend>unitree_go</depend>
-  <depend>follow_anywhere_interfaces</depend>
+  <depend>perception_msgs</depend>
   <depend>go2_scenarios</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

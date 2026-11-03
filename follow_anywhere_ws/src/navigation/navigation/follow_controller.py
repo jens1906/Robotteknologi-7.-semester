@@ -1,18 +1,19 @@
 import json
 import math
 import time
-from types import SimpleNamespace
 
 import cvxpy as cp
 import numpy as np
 import rclpy
 from rclpy.node import Node
 
-from follow_anywhere_interfaces.msg import PerceptionLeader, PerceptionObstacleArray
+from perception_msgs.msg import DetectionArray
 from unitree_api.msg import Request
 
 API_STOP_MOVE = 1003
 API_MOVE = 1008
+
+CLASS_LEADER = 3
 
 class Command:
     def __init__(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0):
@@ -28,6 +29,7 @@ class FollowLeader(Node):
     def __init__(self):
         super().__init__('follow_leader')
         self.has_leader = False
+        self.leader_id = None
         self.last_seen = None
         self.leader = None
         self.last_path = None
@@ -37,31 +39,35 @@ class FollowLeader(Node):
         self.obstacles = []
 
         self.pub = self.create_publisher(Request, '/api/sport/request', 10)
-        self.create_subscription(PerceptionLeader, '/perception/leader', self.on_leader, 10)
-        self.create_subscription(PerceptionObstacleArray, '/perception/obstacles', self.on_obstacles, 10)
+        self.create_subscription(DetectionArray, '/perception/detections', self.on_detections, 10)
         rate = self.declare_parameter('rate', 10.0).value
         self.dt = 1.0 / rate
         self.create_timer(self.dt, self.tick)
 
-    def on_leader(self, msg: PerceptionLeader) -> None:
-        p = msg.closest_point
-        if msg.status != PerceptionLeader.VISIBLE or not (math.isfinite(p.x) and math.isfinite(p.y)):
-            return
-        self.leader = SimpleNamespace(range=math.hypot(p.x, p.y), bearing=math.atan2(p.y, p.x),
-                                      velocity=msg.velocity, velocity_std=msg.velocity_uncertainty)
-        self.last_seen = time.monotonic()
-        self.has_leader = True
-
-    def on_obstacles(self, msg: PerceptionObstacleArray) -> None:
+    def on_detections(self, msg: DetectionArray) -> None:
+        now = time.monotonic()
+        
         obstacles = []
-        for i in msg.obstacles:
-            p = i.closest_point
-            if not (math.isfinite(p.x) and math.isfinite(p.y)):
-                continue
-            speed_triplet = (i.velocity.x, i.velocity.y, i.velocity_uncertainty)
-            obstacles.append((math.hypot(p.x, p.y), math.atan2(p.y, p.x), speed_triplet))
+        for i in msg.detections:
+            if i.class_id == CLASS_LEADER:
+                self.leader = i
+                self.last_seen = now
+                self.has_leader = True
+                self.leader_id = i.id
+                
+            elif self.has_leader and i.id == self.leader_id:
+                self.leader = i
+                self.last_seen = now
+                
+            else:
+                speed_triplet = (0.0, 0.0, 0.0)
+                if i.moving:
+                    speed_triplet = (i.velocity.x, i.velocity.y, i.velocity_std)
+                
+                obstacles.append((i.nearest_range, i.nearest_bearing, speed_triplet))
 
         self.obstacles = obstacles
+                
 
     def tick(self) -> None:
         cmd = self.compute()

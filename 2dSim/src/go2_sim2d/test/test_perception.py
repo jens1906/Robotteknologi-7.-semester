@@ -1,19 +1,16 @@
 import math
 
-import numpy as np
 import pytest
 
 from go2_sim2d.geometry import Box, Circle
 from go2_sim2d.perception import (
-    CLASS_LEADER, CLASS_OBJECT, CLASS_UNKNOWN, LOST, NO_LEADER, SENSOR_CAMERA, SENSOR_LIDAR,
-    VISIBLE, Entity, FakePerception, LeaderTracker, Params, VelocityTracker, lidar_limit,
-    line_of_sight_point)
+    CLASS_LEADER, CLASS_OBJECT, CLASS_UNKNOWN, SENSOR_CAMERA, SENSOR_LIDAR,
+    Entity, FakePerception, Params, VelocityTracker)
 
 
 def exact(**overrides):
     """Perception without noise or dropouts: reports ground truth."""
-    params = Params(noise_scale=0.0, dropout_prob=0.0, velocity_alpha=1.0,
-                    lidar_self_occlusion_prob=0.0)
+    params = Params(noise_scale=0.0, dropout_prob=0.0, velocity_alpha=1.0)
     for k, v in overrides.items():
         setattr(params, k, v)
     return FakePerception(params, seed=0)
@@ -34,7 +31,7 @@ def test_leader_ahead_is_seen_by_both_sensors():
 
 
 def test_behind_is_lidar_only_and_unclassified():
-    person = Entity(1, 'person', Circle(-1.2, 0.0, 0.25))
+    person = Entity(1, 'person', Circle(-2.0, 0.0, 0.25))
     (d,) = exact().detect((0.0, 0.0, 0.0), [person], 0.0)
     assert d.sensors == SENSOR_LIDAR
     assert d.class_id == CLASS_UNKNOWN
@@ -61,38 +58,6 @@ def test_occlusion():
 def test_out_of_range():
     far = Entity(1, 'static', Circle(30.0, 0.0, 0.3))
     assert exact().detect((0.0, 0.0, 0.0), [far], 0.0) == []
-
-
-def test_lidar_limit_from_tilt():
-    p = Params()
-    behind = p.lidar_height / math.tan(math.radians(p.lidar_tilt_deg))
-    assert lidar_limit(p, math.pi) == pytest.approx(behind)          # ~1.57 m
-    assert lidar_limit(p, 0.0) == pytest.approx(p.lidar_range_max)
-    assert lidar_limit(p, math.pi / 2) == pytest.approx(p.lidar_range_max)
-
-
-def test_lidar_is_short_sighted_behind():
-    far_behind = Entity(1, 'static', Circle(-3.0, 0.0, 0.25))
-    beside = Entity(2, 'static', Circle(0.283, 3.0, 0.25))
-    seen = by_id(exact().detect((0.0, 0.0, 0.0), [far_behind, beside], 0.0))
-    assert set(seen) == {2}
-    assert seen[2].sensors == SENSOR_LIDAR
-
-
-def test_legs_never_block_the_clear_sector():
-    p = exact(lidar_self_occlusion_prob=1.0, scan_rays=360)
-    ring = [Circle(0.283 + 2.0 * math.cos(a), 2.0 * math.sin(a), 0.3)
-            for a in [math.radians(d) for d in range(0, 360, 10)]]
-    bearings, ranges = p.scan((0.0, 0.0, 0.0), ring)
-    hit = np.isfinite(ranges)
-    # Rays whose hit is within +-70 deg of the sensor's front all return.
-    hx = ranges * np.cos(bearings) - 0.283
-    hy = ranges * np.sin(bearings)
-    front = np.abs(np.arctan2(hy, hx)) < math.radians(70)
-    assert hit[front & np.isfinite(hx)].all() and (front & hit).any()
-    # Everything outside +-75 deg is blocked when the legs always are.
-    back = np.abs(np.arctan2(hy, hx)) > math.radians(75)
-    assert not (back & hit).any()
 
 
 def test_wall_nearest_point():
@@ -125,8 +90,7 @@ def test_noise_is_bounded():
     mean = sum(ranges) / len(ranges)
     std = math.sqrt(sum((r - mean) ** 2 for r in ranges) / len(ranges))
     assert mean == pytest.approx(5.0, abs=0.02)
-    a, b = Params().lidar_range_std
-    assert std == pytest.approx(a + b * 5.0, rel=0.2)
+    assert std == pytest.approx(0.02 + 0.01 * 5.0, rel=0.2)
 
 
 def test_scan():
@@ -135,43 +99,3 @@ def test_scan():
     assert list(bearings) == pytest.approx([-math.pi, -math.pi / 2, 0.0, math.pi / 2])
     assert ranges[2] == pytest.approx(4.5)
     assert math.isinf(ranges[0])
-
-
-def test_leader_tracker_status():
-    leader = Entity(1, 'person', Circle(2.0, 0.0, 0.25), leader=True)
-    box = Entity(2, 'static', Box(0.0, 3.0, 0.0, 1.0, 1.0))
-    p, tracker = exact(), LeaderTracker()
-
-    state, obstacles = tracker.update([], 1, (0.0, 0.0, 0.0), 0.0)
-    assert state.status == NO_LEADER and math.isnan(state.last_known_point[0])
-    assert obstacles == []
-
-    detections = p.detect((0.0, 0.0, 0.0), [leader, box], 0.0)
-    state, obstacles = tracker.update(detections, 1, (0.0, 0.0, 0.0), 0.0)
-    assert state.status == VISIBLE and state.lost_duration == 0.0
-    assert state.closest_point == pytest.approx((1.75, 0.0))
-    assert len(obstacles) == 1                       # the box, not the leader
-    assert obstacles[0].closest_point == pytest.approx((0.0, 2.5))
-
-    # Leader out of sight, robot moved 1 m forward: last known point stays in place.
-    state, obstacles = tracker.update([], 1, (1.0, 0.0, 0.0), 2.0)
-    assert state.status == LOST and state.lost_duration == pytest.approx(2.0)
-    assert math.isnan(state.closest_point[0])
-    assert state.last_known_point == pytest.approx((0.75, 0.0))
-
-
-def test_unidentified_leader_is_an_obstacle():
-    leader = Entity(1, 'person', Circle(-1.2, 0.0, 0.25), leader=True)   # behind: lidar only
-    detections = exact().detect((0.0, 0.0, 0.0), [leader], 0.0)
-    state, obstacles = LeaderTracker().update(detections, 1, (0.0, 0.0, 0.0), 0.0)
-    assert state.status == NO_LEADER
-    assert len(obstacles) == 1
-
-
-def test_line_of_sight_point():
-    # Circle beside the line to (4, 0): nearest point is on the circle, towards the line.
-    assert line_of_sight_point(2.0, 1.0, 0.25, 4.0, 0.0) == pytest.approx((2.0, 0.75))
-    # Circle across the line: the point is on the line.
-    assert line_of_sight_point(2.0, 0.1, 0.25, 4.0, 0.0) == pytest.approx((2.0, 0.0))
-    # Past the end of the line: towards the end point.
-    assert line_of_sight_point(6.0, 0.0, 0.5, 4.0, 0.0) == pytest.approx((5.5, 0.0))
