@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <follow_anywhere_interfaces/msg/perception_leader.hpp>
@@ -38,6 +39,9 @@ constexpr double NOT_A_NUMBER = std::numeric_limits<double>::quiet_NaN();
 // Debug
 constexpr double DEBUG_REPEAT_SECONDS = 2.0;
 
+// Occupancy grid
+constexpr double GRID_KEEP_MARGIN = 1.0;
+
 // Parameter defaults
 struct LidarObstaclesSettings
 {
@@ -46,32 +50,36 @@ struct LidarObstaclesSettings
   double minObstacleHeight = -0.20;
   double maxObstacleHeight = 1.0;
   double cellSize = 0.10;
-  int minPointsPerCell = 2;
-  int minClusterPoints = 5;
+  int minClusterCells = 2;
+  double lidarMountX = 0.28;
+  double lidarMountZ = 0.0;
+  double hitScore = 0.85;
+  double passScore = 0.4;
+  double occupiedScore = 1.0;
+  double maxCellScore = 2.0;
+  double minCellScore = -2.0;
+  double occupiedHoldSeconds = 0.0;
   double lidarPositionUncertainty = 0.10;
   double matchDistance = 0.5;
   double maxCameraAge = 0.5;
   double odometryTimeout = 0.5;
   double clockOffsetWindow = 5.0;
   double poseHistorySeconds = 1.0;
-  double cloudHistorySeconds = 0.35;
 };
 
 // Data structures
 struct LidarCluster
 {
   Point closestPoint;
-  int pointCount = 0;
+  int cellCount = 0;
 };
 
-struct GridCell
+struct OccupancyCell
 {
   int cellX = 0;
   int cellY = 0;
-  int pointCount = 0;
-  Point closestPoint;
-  double closestDistance = std::numeric_limits<double>::infinity();
-  bool visited = false;
+  double score = 0.0;
+  double lastHitSeconds = 0.0;
 };
 
 struct RobotPose
@@ -80,13 +88,6 @@ struct RobotPose
   double positionX = 0.0;
   double positionY = 0.0;
   double heading = 0.0;
-};
-
-struct StoredCloud
-{
-  double seconds = 0.0;
-  RobotPose robotPose;
-  std::vector<Point> points;
 };
 
 struct ClockSample
@@ -108,6 +109,9 @@ struct ClusterMatch
   size_t clusterIndex = 0;
   double distance = 0.0;
 };
+
+// Odometry frame
+const RobotPose ODOMETRY_ORIGIN;
 
 double ConvertStampToSeconds(const builtin_interfaces::msg::Time &stamp)
 {
@@ -217,15 +221,21 @@ public:
     settings.minObstacleHeight = declare_parameter("minObstacleHeight", defaults.minObstacleHeight);
     settings.maxObstacleHeight = declare_parameter("maxObstacleHeight", defaults.maxObstacleHeight);
     settings.cellSize = declare_parameter("cellSize", defaults.cellSize);
-    settings.minPointsPerCell = declare_parameter("minPointsPerCell", defaults.minPointsPerCell);
-    settings.minClusterPoints = declare_parameter("minClusterPoints", defaults.minClusterPoints);
+    settings.minClusterCells = declare_parameter("minClusterCells", defaults.minClusterCells);
+    settings.lidarMountX = declare_parameter("lidarMountX", defaults.lidarMountX);
+    settings.lidarMountZ = declare_parameter("lidarMountZ", defaults.lidarMountZ);
+    settings.hitScore = declare_parameter("hitScore", defaults.hitScore);
+    settings.passScore = declare_parameter("passScore", defaults.passScore);
+    settings.occupiedScore = declare_parameter("occupiedScore", defaults.occupiedScore);
+    settings.maxCellScore = declare_parameter("maxCellScore", defaults.maxCellScore);
+    settings.minCellScore = declare_parameter("minCellScore", defaults.minCellScore);
+    settings.occupiedHoldSeconds = declare_parameter("occupiedHoldSeconds", defaults.occupiedHoldSeconds);
     settings.lidarPositionUncertainty = declare_parameter("lidarPositionUncertainty", defaults.lidarPositionUncertainty);
     settings.matchDistance = declare_parameter("matchDistance", defaults.matchDistance);
     settings.maxCameraAge = declare_parameter("maxCameraAge", defaults.maxCameraAge);
     settings.odometryTimeout = declare_parameter("odometryTimeout", defaults.odometryTimeout);
     settings.clockOffsetWindow = declare_parameter("clockOffsetWindow", defaults.clockOffsetWindow);
     settings.poseHistorySeconds = declare_parameter("poseHistorySeconds", defaults.poseHistorySeconds);
-    settings.cloudHistorySeconds = declare_parameter("cloudHistorySeconds", defaults.cloudHistorySeconds);
 
     // Output topics
     staticObstaclesPublisher = create_publisher<PerceptionObstacleArray>("/perception/obstacles_static", 10);
@@ -267,7 +277,7 @@ private:
       PublishDebugMessage("odometry back, pose history restarted");
       clockSamples.clear();
       poseHistory.clear();
-      cloudHistory.clear();
+      occupancyGrid.clear();
     }
     lastOdometryArrivalSeconds = arrivalSeconds;
     double correctedSeconds = CorrectStamp(ConvertStampToSeconds(odometryMessage->header.stamp), arrivalSeconds);
@@ -278,7 +288,7 @@ private:
         return;
       }
       poseHistory.clear();
-      cloudHistory.clear();
+      occupancyGrid.clear();
     }
     const auto &orientation = odometryMessage->pose.pose.orientation;
     RobotPose robotPose;
@@ -311,16 +321,23 @@ private:
       ? now()
       : rclcpp::Time(cloudMessage->header.stamp, get_clock()->get_clock_type()) +
           rclcpp::Duration::from_seconds(clockOffsetSeconds);
-    std::vector<LidarCluster> lidarClusters;
+    std::optional<RobotPose> robotPoseNow = FindRobotPose(lidarTime.seconds());
+    if (!robotPoseNow || !occupancyGridInOdometry)
+    {
+      occupancyGrid.clear();
+    }
+    occupancyGridInOdometry = robotPoseNow.has_value();
+    RobotPose gridPose = robotPoseNow.value_or(ODOMETRY_ORIGIN);
     try
     {
-      lidarClusters = FindLidarClusters(MergeRecentClouds(ReadCloudPoints(*cloudMessage), lidarTime.seconds()));
+      UpdateOccupancyGrid(ReadCloudPoints(*cloudMessage), gridPose, lidarTime.seconds());
     }
     catch (const std::runtime_error &error)
     {
       PublishDebugMessage(std::string("point cloud unreadable (") + error.what() + "), skipping frame");
       return;
     }
+    std::vector<LidarCluster> lidarClusters = FindLidarClusters(gridPose, lidarTime.seconds());
     std::vector<PredictedPerson> predictedPeople = CollectPredictedPeople(lidarTime.seconds());
     MatchClustersToPeople(predictedPeople, lidarClusters);
 
@@ -380,75 +397,131 @@ private:
       cloudPoint.x = *iteratorX;
       cloudPoint.y = *iteratorY;
       cloudPoint.z = *iteratorZ;
-      if (!std::isfinite(cloudPoint.x) || !std::isfinite(cloudPoint.y) || !std::isfinite(cloudPoint.z) ||
-          cloudPoint.z < settings.minObstacleHeight || cloudPoint.z > settings.maxObstacleHeight)
+      if (std::isfinite(cloudPoint.x) && std::isfinite(cloudPoint.y) && std::isfinite(cloudPoint.z))
       {
-        continue;
+        cloudPoints.push_back(cloudPoint);
       }
-      cloudPoints.push_back(cloudPoint);
     }
     return cloudPoints;
   }
 
-  std::vector<Point> MergeRecentClouds(const std::vector<Point> &cloudPoints, double lidarSeconds)
+  void UpdateOccupancyGrid(const std::vector<Point> &cloudPoints, const RobotPose &robotPose, double lidarSeconds)
   {
-    std::optional<RobotPose> robotPoseNow = FindRobotPose(lidarSeconds);
-    if (!robotPoseNow)
-    {
-      cloudHistory.clear();
-      return cloudPoints;
-    }
-    cloudHistory.push_back({lidarSeconds, *robotPoseNow, cloudPoints});
-    while (cloudHistory.size() > 1 && cloudHistory.front().seconds < lidarSeconds - settings.cloudHistorySeconds)
-    {
-      cloudHistory.pop_front();
-    }
-    std::vector<Point> mergedPoints;
-    for (const StoredCloud &storedCloud : cloudHistory)
-    {
-      for (const Point &storedPoint : storedCloud.points)
-      {
-        mergedPoints.push_back(MovePointBetweenPoses(storedPoint, storedCloud.robotPose, *robotPoseNow));
-      }
-    }
-    return mergedPoints;
-  }
-
-  std::vector<LidarCluster> FindLidarClusters(const std::vector<Point> &cloudPoints)
-  {
-    std::unordered_map<int64_t, GridCell> gridCells;
+    std::unordered_set<int64_t> passedCells;
+    std::unordered_set<int64_t> hitCells;
+    double stepLength = settings.cellSize / 2.0;
     for (const Point &cloudPoint : cloudPoints)
     {
+      double beamX = cloudPoint.x - settings.lidarMountX;
+      double beamZ = cloudPoint.z - settings.lidarMountZ;
+      double beamLength = std::hypot(beamX, cloudPoint.y);
+      int stepCount = static_cast<int>(std::min(beamLength, settings.maxRange) / stepLength);
+      int64_t lastCellKey = std::numeric_limits<int64_t>::min();
+      for (int stepIndex = 0; stepIndex < stepCount; ++stepIndex)
+      {
+        double fraction = stepIndex * stepLength / beamLength;
+        double beamHeight = settings.lidarMountZ + beamZ * fraction;
+        if (beamHeight < settings.minObstacleHeight || beamHeight > settings.maxObstacleHeight)
+        {
+          continue;
+        }
+        Point stepPoint;
+        stepPoint.x = settings.lidarMountX + beamX * fraction;
+        stepPoint.y = cloudPoint.y * fraction;
+        int64_t cellKey = AddOccupancyCell(MovePointBetweenPoses(stepPoint, robotPose, ODOMETRY_ORIGIN));
+        if (cellKey != lastCellKey)
+        {
+          passedCells.insert(cellKey);
+          lastCellKey = cellKey;
+        }
+      }
+
       double horizontalDistance = std::hypot(cloudPoint.x, cloudPoint.y);
-      if (horizontalDistance < settings.minRange || horizontalDistance > settings.maxRange)
+      if (cloudPoint.z < settings.minObstacleHeight || cloudPoint.z > settings.maxObstacleHeight ||
+          horizontalDistance < settings.minRange || horizontalDistance > settings.maxRange)
       {
         continue;
       }
-      int cellX = static_cast<int>(std::floor(cloudPoint.x / settings.cellSize));
-      int cellY = static_cast<int>(std::floor(cloudPoint.y / settings.cellSize));
-      GridCell &gridCell = gridCells[MakeCellKey(cellX, cellY)];
-      gridCell.cellX = cellX;
-      gridCell.cellY = cellY;
-      gridCell.pointCount++;
-      if (horizontalDistance < gridCell.closestDistance)
+      int64_t cellKey = AddOccupancyCell(MovePointBetweenPoses(cloudPoint, robotPose, ODOMETRY_ORIGIN));
+      OccupancyCell &occupancyCell = occupancyGrid[cellKey];
+      occupancyCell.score = std::min(settings.maxCellScore, occupancyCell.score + settings.hitScore);
+      occupancyCell.lastHitSeconds = lidarSeconds;
+      hitCells.insert(cellKey);
+    }
+
+    for (int64_t cellKey : passedCells)
+    {
+      if (hitCells.count(cellKey) == 0)
       {
-        gridCell.closestDistance = horizontalDistance;
-        gridCell.closestPoint.x = cloudPoint.x;
-        gridCell.closestPoint.y = cloudPoint.y;
-        gridCell.closestPoint.z = 0.0;
+        OccupancyCell &occupancyCell = occupancyGrid[cellKey];
+        occupancyCell.score = std::max(settings.minCellScore, occupancyCell.score - settings.passScore);
+      }
+    }
+    for (auto cellEntry = occupancyGrid.begin(); cellEntry != occupancyGrid.end();)
+    {
+      Point cellCentre = MakeCellCentre(cellEntry->second);
+      double robotDistance = std::hypot(cellCentre.x - robotPose.positionX, cellCentre.y - robotPose.positionY);
+      if (robotDistance > settings.maxRange + GRID_KEEP_MARGIN)
+      {
+        cellEntry = occupancyGrid.erase(cellEntry);
+      }
+      else
+      {
+        ++cellEntry;
+      }
+    }
+  }
+
+  int64_t AddOccupancyCell(const Point &odometryPoint)
+  {
+    int cellX = static_cast<int>(std::floor(odometryPoint.x / settings.cellSize));
+    int cellY = static_cast<int>(std::floor(odometryPoint.y / settings.cellSize));
+    int64_t cellKey = MakeCellKey(cellX, cellY);
+    OccupancyCell &occupancyCell = occupancyGrid[cellKey];
+    occupancyCell.cellX = cellX;
+    occupancyCell.cellY = cellY;
+    return cellKey;
+  }
+
+  Point MakeCellCentre(const OccupancyCell &occupancyCell)
+  {
+    Point cellCentre;
+    cellCentre.x = (occupancyCell.cellX + 0.5) * settings.cellSize;
+    cellCentre.y = (occupancyCell.cellY + 0.5) * settings.cellSize;
+    return cellCentre;
+  }
+
+  bool IsCellOccupied(const OccupancyCell &occupancyCell, const RobotPose &robotPose, double lidarSeconds)
+  {
+    Point cellCentre = MakeCellCentre(occupancyCell);
+    double robotDistance = std::hypot(cellCentre.x - robotPose.positionX, cellCentre.y - robotPose.positionY);
+    bool recentlyHit = settings.occupiedHoldSeconds <= 0.0 ||
+                       lidarSeconds - occupancyCell.lastHitSeconds <= settings.occupiedHoldSeconds;
+    return occupancyCell.score > settings.occupiedScore && recentlyHit &&
+           robotDistance >= settings.minRange && robotDistance <= settings.maxRange;
+  }
+
+  std::vector<LidarCluster> FindLidarClusters(const RobotPose &robotPose, double lidarSeconds)
+  {
+    std::unordered_set<int64_t> occupiedCells;
+    for (const auto &cellEntry : occupancyGrid)
+    {
+      if (IsCellOccupied(cellEntry.second, robotPose, lidarSeconds))
+      {
+        occupiedCells.insert(cellEntry.first);
       }
     }
 
+    std::unordered_set<int64_t> visitedCells;
     std::vector<LidarCluster> lidarClusters;
-    for (auto &cellEntry : gridCells)
+    for (int64_t cellKey : occupiedCells)
     {
-      GridCell &gridCell = cellEntry.second;
-      if (gridCell.visited || gridCell.pointCount < settings.minPointsPerCell)
+      if (visitedCells.count(cellKey) > 0)
       {
         continue;
       }
-      LidarCluster lidarCluster = GrowClusterFromCell(gridCells, gridCell);
-      if (lidarCluster.pointCount >= settings.minClusterPoints)
+      LidarCluster lidarCluster = GrowClusterFromCell(cellKey, occupiedCells, visitedCells, robotPose);
+      if (lidarCluster.cellCount >= settings.minClusterCells)
       {
         lidarClusters.push_back(lidarCluster);
       }
@@ -456,34 +529,36 @@ private:
     return lidarClusters;
   }
 
-  LidarCluster GrowClusterFromCell(std::unordered_map<int64_t, GridCell> &gridCells, GridCell &startCell)
+  LidarCluster GrowClusterFromCell(int64_t startCellKey, const std::unordered_set<int64_t> &occupiedCells,
+                                   std::unordered_set<int64_t> &visitedCells, const RobotPose &robotPose)
   {
     LidarCluster lidarCluster;
     double closestDistance = std::numeric_limits<double>::infinity();
-    std::vector<GridCell *> cellsToVisit{&startCell};
-    startCell.visited = true;
+    std::vector<int64_t> cellsToVisit{startCellKey};
+    visitedCells.insert(startCellKey);
     while (!cellsToVisit.empty())
     {
-      GridCell *gridCell = cellsToVisit.back();
+      const OccupancyCell &occupancyCell = occupancyGrid.at(cellsToVisit.back());
       cellsToVisit.pop_back();
-      lidarCluster.pointCount += gridCell->pointCount;
-      if (gridCell->closestDistance < closestDistance)
+      lidarCluster.cellCount++;
+      Point cellPoint = MovePointBetweenPoses(MakeCellCentre(occupancyCell), ODOMETRY_ORIGIN, robotPose);
+      double cellDistance = std::hypot(cellPoint.x, cellPoint.y);
+      if (cellDistance < closestDistance)
       {
-        closestDistance = gridCell->closestDistance;
-        lidarCluster.closestPoint = gridCell->closestPoint;
+        closestDistance = cellDistance;
+        lidarCluster.closestPoint = cellPoint;
       }
       for (int stepX = -1; stepX <= 1; ++stepX)
       {
         for (int stepY = -1; stepY <= 1; ++stepY)
         {
-          auto neighbourCell = gridCells.find(MakeCellKey(gridCell->cellX + stepX, gridCell->cellY + stepY));
-          if (neighbourCell == gridCells.end() || neighbourCell->second.visited ||
-              neighbourCell->second.pointCount < settings.minPointsPerCell)
+          int64_t neighbourKey = MakeCellKey(occupancyCell.cellX + stepX, occupancyCell.cellY + stepY);
+          if (occupiedCells.count(neighbourKey) == 0 || visitedCells.count(neighbourKey) > 0)
           {
             continue;
           }
-          neighbourCell->second.visited = true;
-          cellsToVisit.push_back(&neighbourCell->second);
+          visitedCells.insert(neighbourKey);
+          cellsToVisit.push_back(neighbourKey);
         }
       }
     }
@@ -660,7 +735,8 @@ private:
 
   // Robot odometry
   std::deque<RobotPose> poseHistory;
-  std::deque<StoredCloud> cloudHistory;
+  std::unordered_map<int64_t, OccupancyCell> occupancyGrid;
+  bool occupancyGridInOdometry = false;
   std::deque<ClockSample> clockSamples;
   double clockOffsetSeconds = NOT_A_NUMBER;
   double lastOdometryArrivalSeconds = NOT_A_NUMBER;
