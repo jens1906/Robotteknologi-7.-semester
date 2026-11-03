@@ -36,8 +36,10 @@
 #include <set>
 #include <thread>
 
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #include <ament_index_cpp/get_package_share_path.hpp>
 #include <follow_anywhere_interfaces/srv/perception_calibrate_leader.hpp>
@@ -58,6 +60,8 @@ namespace web_viewer
 
 namespace
 {
+
+constexpr auto RECORDER_STOP_TIMEOUT = 15s;
 
 // Reads a string or number field from the flat JSON objects the browser sends.
 std::string json_field(const std::string & js, const std::string & key)
@@ -216,10 +220,7 @@ public:
   {
     {
       std::lock_guard<std::mutex> lk(record_mtx_);
-      if (record_state_ == "recording") {
-        record_state_ = "saving";
-        kill(recorder_pid_, SIGINT);
-      }
+      if (record_state_ == "recording") {signal_recorder_stop();}
     }
     if (recorder_thread_.joinable()) {recorder_thread_.join();}
     server_->stop();
@@ -379,8 +380,8 @@ private:
       std::filesystem::create_directories(bag_directory_, ec);
       auto path = free_path(bag_directory_, std::string("recording_") + stamp);
 
-      std::vector<std::string> args =
-      {"ros2", "bag", "record", "-a", "-o", path.string(), "--exclude-regex", exclude_regex_};
+      std::vector<std::string> args = {"ros2", "bag", "record", "-a", "-o", path.string(),
+        "--exclude-regex", exclude_regex_, "--disable-keyboard-controls"};
       std::vector<char *> argv;
       for (auto & a : args) {argv.push_back(a.data());}
       argv.push_back(nullptr);
@@ -388,8 +389,12 @@ private:
       posix_spawnattr_init(&attr);
       posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
       posix_spawnattr_setpgroup(&attr, 0);
+      posix_spawn_file_actions_t files;
+      posix_spawn_file_actions_init(&files);
+      posix_spawn_file_actions_addopen(&files, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
       pid_t pid;
-      int err = posix_spawnp(&pid, "ros2", nullptr, &attr, argv.data(), environ);
+      int err = posix_spawnp(&pid, "ros2", &files, &attr, argv.data(), environ);
+      posix_spawn_file_actions_destroy(&files);
       posix_spawnattr_destroy(&attr);
 
       if (err != 0) {
@@ -418,20 +423,41 @@ private:
       std::lock_guard<std::mutex> lk(record_mtx_);
       if (record_state_ != "recording") {return;}
       record_title_ = clean_title(title);
-      record_state_ = "saving";
-      kill(recorder_pid_, SIGINT);
+      signal_recorder_stop();
     }
     broadcast(recording_state());
+  }
+
+  void signal_recorder_stop()
+  {
+    record_state_ = "saving";
+    record_stop_ = std::chrono::steady_clock::now();
+    kill(-recorder_pid_, SIGINT);
+    kill(-recorder_pid_, SIGCONT);
   }
 
   void wait_for_recorder(pid_t pid)
   {
     int status = 0;
-    waitpid(pid, &status, 0);
+    bool killed = false;
+    while (waitpid(pid, &status, WNOHANG) == 0) {
+      std::this_thread::sleep_for(100ms);
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      if (record_state_ == "saving" &&
+        std::chrono::steady_clock::now() - record_stop_ > RECORDER_STOP_TIMEOUT)
+      {
+        kill(-pid, SIGKILL);
+        killed = true;
+      }
+    }
     std::string error;
     {
       std::lock_guard<std::mutex> lk(record_mtx_);
-      if (record_state_ != "saving") {
+      if (killed) {
+        error = "ros2 bag record did not stop within " +
+          std::to_string(RECORDER_STOP_TIMEOUT.count()) + " s and was killed, bag left as " +
+          record_name_ + " (repair with ros2 bag reindex)";
+      } else if (record_state_ != "saving") {
         error = "ros2 bag record stopped by itself (" + std::string(WIFSIGNALED(status) ?
           "signal " + std::to_string(WTERMSIG(status)) :
           "exit code " + std::to_string(WEXITSTATUS(status))) + "), bag left as " + record_name_;
@@ -461,7 +487,7 @@ private:
     RCLCPP_ERROR(get_logger(), "%s", error.c_str());
     std_msgs::msg::String m;
     m.data = "BagRecorder: " + error;
-    debug_pub_->publish(m);
+    if (rclcpp::ok()) {debug_pub_->publish(m);}
   }
 
   Payload recording_state()
@@ -733,7 +759,7 @@ private:
   std::string record_state_ = "idle";
   std::string record_name_, record_title_, record_stamp_, record_error_;
   std::filesystem::path record_path_;
-  std::chrono::steady_clock::time_point record_start_;
+  std::chrono::steady_clock::time_point record_start_, record_stop_;
   pid_t recorder_pid_ = -1;
   std::thread recorder_thread_;
 
