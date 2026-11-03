@@ -62,7 +62,9 @@ ros2 run web_viewer web_viewer
 ros2 run web_viewer web_viewer --ros-args -p port:=9090 -p image_hz:=30.0 -p max_points:=80000
 ```
 
-Parameters: `address` (`0.0.0.0`), `port` (8080), `image_hz`/`cloud_hz`/`json_hz` (15/10/10, max rate sent to the browser, doubles), `max_points` (40000, clouds are thinned to this), `max_array` (64, longer arrays in JSON are cut), `jpeg_quality` (70), `max_width` (960, images are scaled down to this), `depth_max_m` (6.0, top of the depth colour map), `default_topics`, `www_root` (serve the page from another directory, e.g. `src/web_viewer/www` while editing it).
+Parameters: `address` (`0.0.0.0`), `port` (8080), `image_hz`/`cloud_hz`/`json_hz` (15/10/10, max rate sent to the browser, doubles), `max_points` (40000, clouds are thinned to this), `max_array` (64, longer arrays in JSON are cut), `jpeg_quality` (70), `max_width` (960, images are scaled down to this), `depth_max_m` (6.0, top of the depth colour map), `default_topics`, `www_root` (serve the page from another directory, e.g. `src/web_viewer/www` while editing it), `bag_directory` (the repo's `RosBag/`), `record_exclude_regex` (raw images, theora/zstd streams and `/config_change_status`).
+
+**Recording bags:** the ▶ button in the top right runs `ros2 bag record -a --exclude-regex <record_exclude_regex>` on the machine running web_viewer. While it records, the button shows ⏸ and a timer. Type a title and press ⏸ to stop: the bag is finalised and renamed to `<title>_MMDD_HHMM`, using the start time, in `bag_directory`. It records under `recording_MMDD_HHMM` until it is saved; a bag still named that way was not stopped from the page. The recorder inherits web_viewer's environment, so start web_viewer from a terminal with `RMW_IMPLEMENTATION`/`CYCLONEDDS_URI` set and `install/setup.bash` sourced. Errors are shown next to the button, logged, and published on `/web_viewer/debug`.
 
 `/frontvideostream` (H.264) is not decoded; use the RealSense topics or `go2_verify` for the head camera.
 

@@ -15,6 +15,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(follow_anywhere_interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
@@ -29,9 +30,12 @@ add_executable(web_viewer
   src/msg_json.cpp
   src/encoders.cpp)
 target_include_directories(web_viewer PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_compile_definitions(web_viewer PRIVATE
+  WEB_VIEWER_BAG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../../RosBag")
 target_link_libraries(web_viewer
   rclcpp::rclcpp
   ${sensor_msgs_TARGETS}
+  ${std_msgs_TARGETS}
   ${std_srvs_TARGETS}
   ${follow_anywhere_interfaces_TARGETS}
   ament_index_cpp::ament_index_cpp

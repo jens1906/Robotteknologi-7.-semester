@@ -12,6 +12,7 @@ const panels = new Map();         // topic -> Panel
 // subscribedTopics: topic -> {subscribeOptions, HandleMessage(data, stamp)}.
 const views = new Set();
 let savedOpen = JSON.parse(localStorage.getItem(STORE) || 'null');
+let recording = { state: 'idle', since: 0, name: '', error: '' };
 
 // ------------------------------------------------------------- connection
 
@@ -43,6 +44,7 @@ function setStatus(ok) {
   const s = $('#status');
   s.textContent = ok ? 'connected' : 'disconnected';
   s.className = ok ? 'ok' : 'bad';
+  $('#record-button').disabled = !ok;
 }
 
 function onText(m) {
@@ -70,8 +72,40 @@ function onText(m) {
       for (const v of views) if (v.subscribedTopics.has(m.topic)) v.HandleTopicError(m.topic, m.error);
       break;
     case 'result': for (const v of views) v.HandleServiceResult(m); break;
+    case 'recording': onRecording(m); break;
   }
 }
+
+$('#record-button').onclick = () => {
+  if (recording.state === 'idle') send({ op: 'record_start' });
+  else if (recording.state === 'recording') send({ op: 'record_stop', title: $('#bag-title').value });
+};
+
+function onRecording(m) {
+  if (recording.state === 'saving' && m.state === 'idle' && !m.error) $('#bag-title').value = '';
+  recording = { state: m.state, since: performance.now() - m.elapsed * 1000, name: m.name, error: m.error };
+  const b = $('#record-button');
+  b.textContent = m.state === 'idle' ? '▶' : '⏸';
+  b.title = m.state === 'idle' ? 'Start recording a bag' : 'Stop and save the bag';
+  b.className = m.state === 'idle' ? '' : 'active';
+  b.disabled = m.state === 'saving';
+  updateRecordInfo();
+}
+
+function updateRecordInfo() {
+  const info = $('#record-info');
+  info.className = recording.state === 'idle' && recording.error ? 'bad' : '';
+  if (recording.state === 'idle') {
+    info.textContent = recording.error || (recording.name ? `saved ${recording.name}` : '');
+    info.title = info.textContent;
+    return;
+  }
+  const seconds = Math.floor((performance.now() - recording.since) / 1000);
+  const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  info.textContent = recording.state === 'saving' ? `saving… ${time}` : `● rec ${time}`;
+  info.title = recording.name;
+}
+setInterval(updateRecordInfo, 500);
 
 function onBinary(buf) {
   const v = new DataView(buf);

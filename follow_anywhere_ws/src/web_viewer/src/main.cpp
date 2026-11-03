@@ -8,6 +8,7 @@
 //                    "pair":"/y" (images) only send the image whose header
 //                                stamp equals a message on /y, "" = unpair
 //   {"op":"calibrate","track_id":7}   {"op":"clear_leader"}
+//   {"op":"record_start"}   {"op":"record_stop","title":"first_follow"}
 // Server -> browser:
 //   text   {"op":"hello","defaults":[...]}
 //   text   {"op":"topics","topics":[["/x","pkg/msg/T"],...]}
@@ -15,23 +16,33 @@
 //   text   {"op":"msg","topic":"/x","data":{...}}           (kind json)
 //   text   {"op":"error","topic":"/x","error":"..."}
 //   text   {"op":"result","success":true,"message":"..."}   (calibrate, clear_leader)
+//   text   {"op":"recording","state":"idle|recording|saving","name":"...","elapsed":s,"error":"..."}
 //   binary [u8 kind][u8 0][u16le topic_len][topic][pad to 4][payload]
 //          kind 1 = JPEG, 2 = PNG, 3 = float32 x,y,z,intensity points
 //          kind 1 and 2 start the payload with [u32 sec][u32 nanosec] of the
 //          image header stamp
 
 #include <chrono>
+#include <cctype>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <thread>
+
+#include <spawn.h>
+#include <sys/wait.h>
 
 #include <ament_index_cpp/get_package_share_path.hpp>
 #include <follow_anywhere_interfaces/srv/perception_calibrate_leader.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
 #include "encoders.hpp"
@@ -39,6 +50,8 @@
 #include "server.hpp"
 
 using namespace std::chrono_literals;
+
+extern char ** environ;
 
 namespace web_viewer
 {
@@ -132,6 +145,23 @@ const char * kind_name(Kind k)
   }
 }
 
+std::string clean_title(std::string title)
+{
+  for (auto & c : title) {
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-') {c = '_';}
+  }
+  return title.empty() ? "bag" : title;
+}
+
+std::filesystem::path free_path(const std::filesystem::path & dir, const std::string & name)
+{
+  auto path = dir / name;
+  for (int i = 2; std::filesystem::exists(path); ++i) {
+    path = dir / (name + "_" + std::to_string(i));
+  }
+  return path;
+}
+
 }  // namespace
 
 class WebViewer : public rclcpp::Node
@@ -155,6 +185,10 @@ public:
     defaults_ = declare_parameter<std::vector<std::string>>(
       "default_topics",
       {"/camera/camera/color/image_raw", "/utlidar/cloud_base", "/sportmodestate"});
+    bag_directory_ = declare_parameter<std::string>("bag_directory", WEB_VIEWER_BAG_DIR);
+    exclude_regex_ = declare_parameter<std::string>(
+      "record_exclude_regex",
+      ".*/image_raw$|.*/image_rect_raw$|.*/theora$|.*/zstd$|^/config_change_status$");
 
     if (www.empty()) {
       www = (ament_index_cpp::get_package_share_path("web_viewer") / "www").string();
@@ -167,6 +201,8 @@ public:
     calibrate_client_ = create_client<follow_anywhere_interfaces::srv::PerceptionCalibrateLeader>(
       "/perception/calibrate_leader");
     clear_client_ = create_client<std_srvs::srv::Trigger>("/perception/clear_leader");
+    // Output topics
+    debug_pub_ = create_publisher<std_msgs::msg::String>("/web_viewer/debug", 10);
 
     server_ = std::make_unique<Server>(address, static_cast<uint16_t>(port), www, cb);
     server_->start();
@@ -178,6 +214,14 @@ public:
 
   ~WebViewer() override
   {
+    {
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      if (record_state_ == "recording") {
+        record_state_ = "saving";
+        kill(recorder_pid_, SIGINT);
+      }
+    }
+    if (recorder_thread_.joinable()) {recorder_thread_.join();}
     server_->stop();
   }
 
@@ -216,6 +260,7 @@ private:
       sessions_[s->id()] = s;
     }
     refresh_topics(true, s);
+    s->send(recording_state(), false, false);
   }
 
   void on_close(const SessionPtr & s)
@@ -238,6 +283,14 @@ private:
     }
     if (op == "clear_leader") {
       clear_leader(s);
+      return;
+    }
+    if (op == "record_start") {
+      start_recording();
+      return;
+    }
+    if (op == "record_stop") {
+      stop_recording(json_field(msg, "title"));
       return;
     }
     auto topic = json_field(msg, "topic");
@@ -307,6 +360,133 @@ private:
     json_escape(m, message);
     m += '}';
     s->send(text(m), false, false);
+  }
+
+  // ----------------------------------------------------------- recording
+
+  void start_recording()
+  {
+    std::string error;
+    {
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      if (record_state_ != "idle") {return;}
+      if (recorder_thread_.joinable()) {recorder_thread_.join();}
+
+      char stamp[16];
+      auto now = std::time(nullptr);
+      std::strftime(stamp, sizeof(stamp), "%m%d_%H%M", std::localtime(&now));
+      std::error_code ec;
+      std::filesystem::create_directories(bag_directory_, ec);
+      auto path = free_path(bag_directory_, std::string("recording_") + stamp);
+
+      std::vector<std::string> args =
+      {"ros2", "bag", "record", "-a", "-o", path.string(), "--exclude-regex", exclude_regex_};
+      std::vector<char *> argv;
+      for (auto & a : args) {argv.push_back(a.data());}
+      argv.push_back(nullptr);
+      posix_spawnattr_t attr;
+      posix_spawnattr_init(&attr);
+      posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+      posix_spawnattr_setpgroup(&attr, 0);
+      pid_t pid;
+      int err = posix_spawnp(&pid, "ros2", nullptr, &attr, argv.data(), environ);
+      posix_spawnattr_destroy(&attr);
+
+      if (err != 0) {
+        error = std::string("cannot start ros2 bag record: ") + std::strerror(err);
+        record_error_ = error;
+      } else {
+        recorder_pid_ = pid;
+        record_path_ = path;
+        record_stamp_ = stamp;
+        record_name_ = path.filename().string();
+        record_title_.clear();
+        record_error_.clear();
+        record_start_ = std::chrono::steady_clock::now();
+        record_state_ = "recording";
+        recorder_thread_ = std::thread([this, pid] {wait_for_recorder(pid);});
+        RCLCPP_INFO(get_logger(), "recording bag to %s", path.c_str());
+      }
+    }
+    if (!error.empty()) {report_record_error(error);}
+    broadcast(recording_state());
+  }
+
+  void stop_recording(const std::string & title)
+  {
+    {
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      if (record_state_ != "recording") {return;}
+      record_title_ = clean_title(title);
+      record_state_ = "saving";
+      kill(recorder_pid_, SIGINT);
+    }
+    broadcast(recording_state());
+  }
+
+  void wait_for_recorder(pid_t pid)
+  {
+    int status = 0;
+    waitpid(pid, &status, 0);
+    std::string error;
+    {
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      if (record_state_ != "saving") {
+        error = "ros2 bag record stopped by itself (" + std::string(WIFSIGNALED(status) ?
+          "signal " + std::to_string(WTERMSIG(status)) :
+          "exit code " + std::to_string(WEXITSTATUS(status))) + "), bag left as " + record_name_;
+      } else if (!std::filesystem::exists(record_path_ / "metadata.yaml")) {
+        error = "bag was not finalised, no metadata.yaml in " + record_name_;
+      } else if (!record_title_.empty()) {
+        auto target = free_path(bag_directory_, record_title_ + "_" + record_stamp_);
+        std::error_code ec;
+        std::filesystem::rename(record_path_, target, ec);
+        if (ec) {
+          error = "cannot rename " + record_name_ + ": " + ec.message();
+        } else {
+          record_name_ = target.filename().string();
+        }
+      }
+      record_state_ = "idle";
+      record_error_ = error;
+      recorder_pid_ = -1;
+      if (error.empty()) {RCLCPP_INFO(get_logger(), "saved bag %s", record_name_.c_str());}
+    }
+    if (!error.empty()) {report_record_error(error);}
+    broadcast(recording_state());
+  }
+
+  void report_record_error(const std::string & error)
+  {
+    RCLCPP_ERROR(get_logger(), "%s", error.c_str());
+    std_msgs::msg::String m;
+    m.data = "BagRecorder: " + error;
+    debug_pub_->publish(m);
+  }
+
+  Payload recording_state()
+  {
+    std::lock_guard<std::mutex> lk(record_mtx_);
+    auto elapsed = record_state_ == "idle" ? 0.0 :
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - record_start_).count();
+    std::string m = "{\"op\":\"recording\",\"state\":\"" + record_state_ + "\",\"name\":";
+    json_escape(m, record_name_);
+    m += ",\"elapsed\":" + std::to_string(elapsed) + ",\"error\":";
+    json_escape(m, record_error_);
+    m += '}';
+    return text(std::move(m));
+  }
+
+  void broadcast(const Payload & p)
+  {
+    std::vector<SessionPtr> targets;
+    {
+      std::lock_guard<std::mutex> lk(mtx_);
+      for (auto & [id, w] : sessions_) {
+        if (auto s = w.lock()) {targets.push_back(s);}
+      }
+    }
+    for (auto & s : targets) {s->send(p, false, false);}
   }
 
   // ------------------------------------------------------- subscriptions
@@ -546,6 +726,17 @@ private:
   rclcpp::Client<follow_anywhere_interfaces::srv::PerceptionCalibrateLeader>::SharedPtr
     calibrate_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr clear_client_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr debug_pub_;
+
+  std::string bag_directory_, exclude_regex_;
+  std::mutex record_mtx_;
+  std::string record_state_ = "idle";
+  std::string record_name_, record_title_, record_stamp_, record_error_;
+  std::filesystem::path record_path_;
+  std::chrono::steady_clock::time_point record_start_;
+  pid_t recorder_pid_ = -1;
+  std::thread recorder_thread_;
+
   std::unique_ptr<Server> server_;
 };
 

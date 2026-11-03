@@ -25,7 +25,20 @@ body { margin: 0; display: flex; height: 100vh; background: var(--bg); color: va
 #topics .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #topics .type { display: block; font-size: 11px; color: var(--muted); }
 
-#panels { flex: 1; overflow: auto; padding: 10px; display: grid; gap: 10px;
+#recorder { position: fixed; top: 8px; right: 12px; z-index: 10; display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+#record-info { font-size: 12px; color: var(--muted); max-width: 320px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+#record-info.bad { color: var(--bad); }
+#bag-title { width: 160px; padding: 4px 8px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px; }
+#record-button { width: 34px; padding: 4px 0; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+#record-button:hover:not(:disabled) { border-color: var(--accent); }
+#record-button.active { color: var(--bad); border-color: var(--bad); }
+#record-button:disabled { opacity: 0.5; cursor: default; }
+
+#panels { flex: 1; overflow: auto; padding: 56px 10px 10px; display: grid; gap: 10px;
   grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); align-content: start; }
 #empty { color: var(--muted); grid-column: 1 / -1; }
 
