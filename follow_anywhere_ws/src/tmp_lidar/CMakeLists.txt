@@ -20,6 +20,7 @@ find_package(Eigen3 REQUIRED)
 # Core: no ROS, so it can be unit tested on its own.
 add_library(tmp_lidar_core STATIC
   src/assignment.cpp
+  src/cloud_gate.cpp
   src/cloud_filter.cpp
   src/clustering.cpp
   src/cluster_tracker.cpp

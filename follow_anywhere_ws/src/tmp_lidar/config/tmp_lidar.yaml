@@ -39,6 +39,11 @@ tmp_lidar:
     hitCellSize: 0.1            # GUESS: m, grid in odom
     memorySeconds: 0.4          # GUESS: s a hit is remembered (~6 clouds); moving people leave at most this much trail
     minCellHits: 2              # GUESS: clouds that must hit a cell within memorySeconds; 1 = no speckle filter
+    cloudsPerUpdate: 1          # cluster/track/publish every this many clouds; 1 = every cloud (~13.5 Hz). Flicker is
+                                # handled by missWindow below at the full rate (2 here gave ~7 Hz)
+    emptyCloudFraction: 0.3     # GUESS: a cloud with fewer than this share of the typical point count ...
+    emptyCloudPoints: 50        # GUESS: ... or fewer points is skipped and the last output repeated ...
+    maxSkippedClouds: 4         # GUESS: ... at most this many in a row (a lidar that went quiet is not frozen)
 
     # --- clusters -------------------------------------------------------------------------------
     cellSize: 0.1               # GUESS: m, hash grid of the neighbour search (speed only)
@@ -73,6 +78,8 @@ tmp_lidar:
     staticVelocitySigma: 0.1    # GUESS: m/s, velocity sigma of wall pieces (velocity 0)
 
     # --- tracking: persistence (Bayes existence probability per track, against flicker) -----------
+    missWindow: 2               # MEASURED (bag): a miss counts once per this many missed clouds in a row: missing from
+                                # one cloud costs nothing. Blinks/s 3.9 -> 3.4 at the full rate (3: no further gain)
     birthExistence: 0.3         # GUESS: a new cluster; one sighting is never published
     confirmExistence: 0.7       # GUESS: published from here (2 sightings) ...
     keepExistence: 0.35         # GUESS: ... until it falls below this
@@ -105,3 +112,6 @@ tmp_lidar:
 
     # --- scan -----------------------------------------------------------------------------------
     scanRays: 720
+    scanFromObstacles: true     # MEASURED (bag): scan from the tracked obstacles, each covering its bearing span: rays
+                                # within 4 m switching on/off between scans 94 % (raw cloud) -> 14 %
+    scanClouds: 2               # scanFromObstacles false: scan from the points of this many clouds (56 % at 2)

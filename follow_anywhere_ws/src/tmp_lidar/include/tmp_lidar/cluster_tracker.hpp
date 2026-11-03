@@ -20,6 +20,8 @@
 // has an existence probability r, updated by Bayes each cloud:
 //   seen:    r <- r P_D / (r P_D + (1 - r) P_FA)
 //   missed:  r <- r (1 - P_D) / (r (1 - P_D) + (1 - r) (1 - P_FA))
+// A miss counts only once the track was missed in all missWindow clouds of a window (2: missing from one cloud
+// costs nothing), so the output keeps the full cloud rate with the protection of updating every 2nd cloud.
 // P_D, the chance the lidar returns a cluster for a real object, falls linearly from detectionProbabilityNear
 // at detectionNearRange to detectionProbabilityFar at detectionFarRange (bag go2_all_topics_6_10_11_28: ~1 %
 // churn per cloud below 1 m, 12-20 % beyond 4 m; the values are much lower than 1 - churn since misses come in
@@ -74,6 +76,7 @@ struct TrackerParams
   double staticVelocitySigma = 0.1;   // sigma reported for wall pieces
 
   // existence
+  int missWindow = 2;                 // clouds: a miss counts once per this many missed clouds in a row
   double birthExistence = 0.3;
   double maxExistence = 0.9999;
   double confirmExistence = 0.7;
@@ -131,6 +134,7 @@ private:
     double lastPredicted = 0.0;
     bool occluded = false;
     int sightings = 0;
+    int missStreak = 0;             // clouds in a row without a sighting
     double noiseScale = 1.0;
     std::vector<Point2> points;     // odom, last cluster
     Point2 positionAtSighting;      // odom, filter position right after the last update

@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 #include <vector>
 
 #include "tmp_lidar/cloud_filter.hpp"
+#include "tmp_lidar/cloud_gate.hpp"
 #include "tmp_lidar/cluster_tracker.hpp"
 #include "tmp_lidar/clustering.hpp"
 #include "tmp_lidar/fusion.hpp"
@@ -543,4 +545,63 @@ TEST(Clustering, FreshCentroidLeadsTheMemoryTrail)
   ASSERT_EQ(clusters.size(), 1u);
   EXPECT_GT(clusters[0].freshPoints, 0);
   EXPECT_GT(clusters[0].measuredCentroid.x, clusters[0].centroid.x + 0.05);
+}
+
+// --- empty clouds, miss window, scan from obstacles -----------------------------------------------------
+
+TEST(CloudGate, SkipsEmptyCloudsButNotForever)
+{
+  CloudGate gate;   // minFraction 0.3, maxSkipped 4
+  for (int k = 0; k < 10; ++k) {EXPECT_TRUE(gate.accept(1400));}
+  EXPECT_FALSE(gate.accept(0));
+  EXPECT_FALSE(gate.accept(200));    // < 30 % of 1400
+  EXPECT_TRUE(gate.accept(1100));    // normal again
+  for (int k = 0; k < 4; ++k) {EXPECT_FALSE(gate.accept(0));}
+  EXPECT_TRUE(gate.accept(0));       // 5th in a row: the lidar really went quiet
+  EXPECT_NEAR(gate.typical(), 1400.0, 1e-9);   // quiet clouds do not lower the typical count
+}
+
+TEST(Persistence, MissingFromOneCloudCostsNothing)
+{
+  // Alternately seen and missed at 4.5 m, forever: with missWindow 2 no miss ever counts.
+  TrackerParams p;
+  ClusterTracker windowed(p);
+  p.missWindow = 1;
+  ClusterTracker every(p);
+  double rWindowed = 0.0, rEvery = 0.0;
+  for (int k = 0; k < 60; ++k) {
+    std::vector<Cluster> a, b;
+    if (k % 2 == 0) {
+      a = clusterPoints(blob(4.5, 0.0), ClusterParams{});
+      b = clusterPoints(blob(4.5, 0.0), ClusterParams{});
+    }
+    windowed.update(a, Pose2{}, true, k * kCloud);
+    every.update(b, Pose2{}, true, k * kCloud);
+    for (auto & c : windowed.publishable(a, Pose2{}, k * kCloud)) {rWindowed = c.existence;}
+    for (auto & c : every.publishable(b, Pose2{}, k * kCloud)) {rEvery = c.existence;}
+  }
+  EXPECT_GT(rWindowed, rEvery);
+  EXPECT_GT(rWindowed, 0.99);
+}
+
+TEST(Scan, ObstacleCoversItsWholeBearingSpan)
+{
+  // Three points of one object 0.2 m apart at 2 m: the raw scan has 3 rays, the obstacle scan all rays between.
+  Cluster c;
+  c.points = {{2.0, -0.2}, {2.0, 0.0}, {2.0, 0.2}};
+  finalizeCluster(c);
+  const auto raw = buildScan(c.points, 720, 0.35, 6.0);
+  const auto filled = buildScan(std::vector<Cluster>{c}, 720, 0.35, 6.0);
+  auto returns = [](const std::vector<float> & r) {
+      return std::count_if(r.begin(), r.end(), [](float v) {return std::isfinite(v);});
+    };
+  EXPECT_EQ(returns(raw), 3);
+  EXPECT_GE(returns(filled), 22);   // ~11.4 deg at 0.5 deg per ray
+  // In between, the interpolated range: about 2 m, never farther than the points.
+  EXPECT_NEAR(filled[360], 2.0, 0.01);
+  // A cluster behind the robot across +-pi stays in one piece (no ray all the way around).
+  Cluster behind;
+  behind.points = {{-2.0, -0.1}, {-2.0, 0.1}};
+  finalizeCluster(behind);
+  EXPECT_LE(returns(buildScan(std::vector<Cluster>{behind}, 720, 0.35, 6.0)), 15);   // 5.7 deg, not 354
 }
