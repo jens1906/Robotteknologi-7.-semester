@@ -21,7 +21,7 @@ WORKDIR /ros2_ws
 COPY follow_anywhere_ws/src/unitree_go/      src/unitree_go/
 COPY follow_anywhere_ws/src/unitree_api/     src/unitree_api/
 COPY follow_anywhere_ws/src/go2_bringup/     src/go2_bringup/
-COPY follow_anywhere_ws/src/perception_msgs/ src/perception_msgs/
+COPY follow_anywhere_ws/src/follow_anywhere_interfaces/ src/follow_anywhere_interfaces/
 
 # ---- Worlds: the same scenes as the Gazebo sim ----
 COPY Gazebo/src/go2_scenarios/ src/go2_scenarios/

@@ -8,14 +8,14 @@ WHAT THIS IS
   - The robot is kinematic: it moves exactly as commanded through the sport
     API, like the real Go2 (same topics as the Gazebo sim and the robot)
   - fake_perception takes the place of the perception stack. It publishes
-    what that stack will publish: the leader, people and obstacles in polar
-    coordinates around base_link, with noise, limited to a lidar field and
-    a camera field, plus a noisy estimate of how they move
+    what that stack publishes: the leader and the obstacles around base_link,
+    with noise, limited to a lidar field and a camera field, plus a noisy
+    estimate of how they move
   - The worlds are the same YAML scenes as the Gazebo sim
     (Gazebo/src/go2_scenarios/scenes), with the same paths and timing
 
-  Nav code written against /api/sport/request, /utlidar/robot_odom and
-  /perception/detections runs unchanged here, on Gazebo (once a perception
+  Nav code written against /api/sport/request, /utlidar/robot_odom,
+  /perception/leader and /perception/obstacles runs unchanged here, on Gazebo (once a perception
   node runs there) and on the robot.
 
 
@@ -63,14 +63,14 @@ VIEWER
   colours, movers, people (the leader orange), the robot (black triangle, its
   0.35 m footprint and its trail). The lidar field is the dashed circle, the
   camera field the yellow wedge. Red dots are /perception/scan.
-  Detections are drawn where perception puts them (projected with the true
-  robot pose), so their noise is visible: a big marker at the centre, a small
-  one at the nearest point, and a velocity arrow (1 s of motion) for moving
-  ones. Colour = class (grey unknown, blue object, green person, magenta
-  leader). Circle = seen by the camera, square = lidar only.
+  Perception output is drawn where perception puts it (projected with the
+  true robot pose), so its noise is visible: the leader's closest point
+  (magenta; hollow at last_known_point while LOST), each obstacle's closest
+  point (blue square) and line-of-sight point (small green dot), and a
+  velocity arrow (1 s of motion) for moving ones.
   The status line shows time, robot pose and speed, distance to the leader,
-  number of detections and collisions.
-  Keys: F follow the robot on/off, D detections, S scan, +/- zoom.
+  leader status, number of obstacles and collisions.
+  Keys: F follow the robot on/off, D perception, S scan, +/- zoom.
 
 
 ROBOT INTERFACE (what robot code sees)
@@ -101,15 +101,21 @@ ROBOT INTERFACE (what robot code sees)
 
 
 FAKE PERCEPTION (takes the place of the perception stack)
-  /perception/detections  perception_msgs/DetectionArray  15 Hz  base_link
-  /perception/scan        sensor_msgs/LaserScan           15 Hz  base_link, 720 rays
+  /perception/leader      follow_anywhere_interfaces/PerceptionLeader         15 Hz  base_link
+  /perception/obstacles   follow_anywhere_interfaces/PerceptionObstacleArray  15 Hz  base_link
+  /perception/scan        sensor_msgs/LaserScan                               15 Hz  base_link, 720 rays
 
-  perception_msgs (follow_anywhere_ws/src/perception_msgs) is the format the
-  real perception stack has to publish later. Per detection: track id, class
-  (unknown / object / person / leader) with confidence, which sensors saw it,
-  range and bearing of its centre and of its nearest point (for walls), each
-  with a std, footprint radius, and velocity over the ground expressed in
-  base_link, with a std and a moving flag.
+  Same messages as the real perception stack (follow_anywhere_ws/src/perception,
+  messages in follow_anywhere_ws/src/follow_anywhere_interfaces).
+  - Leader: VISIBLE while the camera identifies it, LOST after that (with
+    lost_duration and last_known_point, which stays fixed in the world while
+    the robot moves), NO_LEADER until it is first seen or in worlds without
+    a leader. closest_point is the nearest point of the leader's outline.
+  - Obstacles: everything else that is seen, including walls, boxes and
+    movers (the real stack only reports people) and the leader while it is
+    not identified. closest_point, line_of_sight_point (nearest the line from
+    base_link to the leader's point; NaN while there is none), velocity (0
+    when standing still) and 1-sigma uncertainties.
 
   How it is made from ground truth (parameters in
   src/go2_sim2d/config/perception.yaml):
@@ -117,18 +123,16 @@ FAKE PERCEPTION (takes the place of the perception stack)
     An object is seen by a sensor if its centre or its nearest point is in
     that sensor's field and nothing else is in the straight line to it
     (occlusion: false turns that off). Sensors sit at base_link.
-  - Only the camera classifies: people -> person, the leader -> leader
-    (leader_confusion_prob: chance it is reported as a plain person),
-    others -> object. Seen only by the lidar -> unknown.
+  - Only the camera identifies the leader (leader_confusion_prob: chance
+    it is not identified in a frame). Seen only by the lidar -> obstacle.
   - Gaussian noise. Lidar range std 0.02 m + 1 % of the range, bearing 1 deg.
     Camera range std 0.05 m + 5 %, bearing 0.5 deg. When both sensors see an
     object, the lidar's range and the camera's bearing are used.
   - Velocity: true ground velocity (finite differences of the ground truth),
     noise of 0.05 m/s + 5 % of the speed per axis, then a first-order filter
     (velocity_alpha). Static objects report ~0 plus noise. moving = speed
-    above 0.1 m/s.
+    above 0.1 m/s; slower is reported as 0.
   - dropout_prob: chance an object is missing from a frame (default 3 %).
-  - IDs are stable per object (a perfect tracker).
   - noise_scale scales all noise; 0 gives exact ground truth.
 
   fake_perception reads only the /sim/* ground truth and the scene file, not
@@ -171,7 +175,7 @@ LIMITATIONS
     slipping or gait.
   - Both sensors sit at base_link. The mounts in go2_mounts.yaml are not used
     for the fields.
-  - No false positives, no id switches, no merged or split objects. A wall
-    is one detection with its centre and its nearest point.
+  - No false positives, no merged or split objects. A wall is one obstacle
+    with its nearest point.
   - Occlusion is all-or-nothing per point (centre or nearest point) and
     ignores height: a low barrel hides a person behind it.
