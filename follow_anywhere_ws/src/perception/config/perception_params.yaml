@@ -52,6 +52,16 @@ perception_node:
     loseAfterChecks: 2                       # GUESS: checks in a row that say "different person" before the leader is dropped
     recentDistanceTime: 2.0                  # NEW, untested: s a distance stays printed under a box
 
+    # --- camera mounting: base_link -> camera_link (m, rad, roll/pitch/yaw as static_transform_publisher; negative pitch
+    # --- = tilted up). Written by `ros2 run perception calibrate_camera`; perception.launch.py publishes it as a static
+    # --- TF (read by the launch file and calibrate_camera, not by the node) ---------------------
+    cameraX: 0.355                           # GUESS: 350-360 mm ahead of the power button (~ base_link centre), not calibrated yet
+    cameraY: 0.0
+    cameraZ: 0.135                           # GUESS: 70-80 mm above the power button, the trunk top is ~0.06 m above base_link
+    cameraRoll: 0.0
+    cameraPitch: -0.524                      # GUESS: tilted ~30 deg up
+    cameraYaw: 0.0
+
     # --- 3D position ----------------------------------------------------------------------------
     depthMin: 0.3                            # m, depth outside this range is not used
     depthMax: 8.0
