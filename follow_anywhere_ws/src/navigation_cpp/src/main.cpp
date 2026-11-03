@@ -345,9 +345,9 @@ public:
     Eigen::Vector2d p = Eigen::Vector2d::Zero();
     double t = 0.0;
 
-    double hard_margin = 1.0;
-    double soft_margin = 2.0;
-    double leader_margin = 2.0;
+    double hard_margin = 0.3;
+    double soft_margin = 0.7;
+    double leader_margin = 1.5;
     double margin_cost = 50.0;
     double margin_cost_linear = 10.0;
     // exact penalty on breaking the hard margin; keeps the QP always feasible
