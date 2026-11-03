@@ -1,4 +1,5 @@
 from glob import glob
+from os.path import isfile
 
 from setuptools import find_packages, setup
 
