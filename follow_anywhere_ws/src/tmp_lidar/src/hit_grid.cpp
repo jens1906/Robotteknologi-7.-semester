@@ -52,17 +52,24 @@ bool HitGrid::occupied(const Cell & cell, double t, int minHits) const
   return hits >= minHits;
 }
 
-std::vector<Point2> HitGrid::occupiedPoints(double t, int minHits) const
+std::vector<StampedPoint> HitGrid::occupiedStampedPoints(double t, int minHits) const
 {
-  std::vector<Point2> out;
+  std::vector<StampedPoint> out;
   const double oldest = t - params_.memorySeconds;
   for (const auto & [key, cell] : cells_) {
     (void)key;
     if (!occupied(cell, t, minHits)) {continue;}
     for (const auto & [time, p] : cell.points) {
-      if (time >= oldest) {out.push_back(p);}
+      if (time >= oldest) {out.push_back({p, time});}
     }
   }
+  return out;
+}
+
+std::vector<Point2> HitGrid::occupiedPoints(double t, int minHits) const
+{
+  std::vector<Point2> out;
+  for (const auto & s : occupiedStampedPoints(t, minHits)) {out.push_back(s.p);}
   return out;
 }
 

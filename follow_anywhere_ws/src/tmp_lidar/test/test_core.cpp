@@ -8,7 +8,9 @@
 #include "tmp_lidar/cluster_tracker.hpp"
 #include "tmp_lidar/clustering.hpp"
 #include "tmp_lidar/fusion.hpp"
+#include "tmp_lidar/assignment.hpp"
 #include "tmp_lidar/hit_grid.hpp"
+#include "tmp_lidar/motion_model.hpp"
 #include "tmp_lidar/scan_builder.hpp"
 
 using namespace tmp_lidar;
@@ -279,53 +281,6 @@ TEST(Scan, NearestPointPerRay)
   EXPECT_TRUE(std::isinf(ranges[0]));
 }
 
-TEST(Tracker, UnconfirmedNotPublishedConfirmedCoastsThenDrops)
-{
-  ClusterTracker tracker;   // confirmHits 2, coastTime 0.3
-  auto first = clusterPoints(blob(2.0, 0.0), ClusterParams{});
-  tracker.update(first, Pose2{}, true, 0.0);
-  EXPECT_TRUE(tracker.publishable(first, Pose2{}, 0.0).empty());   // seen once
-
-  auto second = clusterPoints(blob(2.0, 0.0), ClusterParams{});
-  tracker.update(second, Pose2{}, true, 0.07);
-  auto out = tracker.publishable(second, Pose2{}, 0.07);
-  ASSERT_EQ(out.size(), 1u);
-  EXPECT_FALSE(out[0].isCoasting);
-
-  std::vector<Cluster> none;
-  tracker.update(none, Pose2{}, true, 0.14);   // missed by the lidar
-  out = tracker.publishable(none, Pose2{}, 0.14);
-  ASSERT_EQ(out.size(), 1u);
-  EXPECT_TRUE(out[0].isCoasting);
-  EXPECT_NEAR(out[0].closest.x, 1.8, 1e-6);
-  EXPECT_GT(out[0].extraSigma, 0.0);
-
-  // Coasting points stay on the floor while the robot drives.
-  const Pose2 moved{0.5, 0.0, 0.0};
-  out = tracker.publishable(none, moved, 0.2);
-  ASSERT_EQ(out.size(), 1u);
-  EXPECT_NEAR(out[0].closest.x, 1.3, 1e-6);
-
-  // At 1.8 m the limit is coastTime + 1.8 / coastFarRange * (coastTimeFar - coastTime) = 0.48 s.
-  EXPECT_NEAR(tracker.coastLimit(1.8), 0.48, 1e-9);
-  tracker.update(none, Pose2{}, true, 0.6);
-  EXPECT_TRUE(tracker.publishable(none, Pose2{}, 0.6).empty());   // missed for 0.53 s
-}
-
-TEST(Tracker, FarObjectsCoastLonger)
-{
-  ClusterTracker tracker;
-  for (double t : {0.0, 0.07}) {
-    auto c = clusterPoints(blob(5.2, 0.0), ClusterParams{});
-    tracker.update(c, Pose2{}, true, t);
-  }
-  std::vector<Cluster> none;
-  tracker.update(none, Pose2{}, true, 0.6);
-  EXPECT_EQ(tracker.publishable(none, Pose2{}, 0.6).size(), 1u);   // 0.53 s missed, limit 0.8 s at 5 m
-  tracker.update(none, Pose2{}, true, 0.9);
-  EXPECT_TRUE(tracker.publishable(none, Pose2{}, 0.9).empty());
-}
-
 TEST(Clustering, OdomGridGivesBaseLinkClusters)
 {
   const Pose2 robot{10.0, 5.0, M_PI / 2};
@@ -335,4 +290,257 @@ TEST(Clustering, OdomGridGivesBaseLinkClusters)
   ASSERT_EQ(clusters.size(), 1u);
   EXPECT_NEAR(clusters[0].closest.x, 1.8, 1e-6);
   EXPECT_NEAR(clusters[0].closest.y, 0.0, 1e-6);
+}
+
+// --- persistence -----------------------------------------------------------------------------------------
+
+namespace
+{
+
+// Feeds a blob at (x, y) (or nothing when !seen) to the tracker at time t; returns what is published.
+std::vector<Cluster> step(ClusterTracker & tracker, double x, double y, bool seen, double t,
+  const Pose2 & robot = Pose2{})
+{
+  std::vector<Cluster> clusters;
+  if (seen) {clusters = clusterPoints(blob(x, y), ClusterParams{});}
+  tracker.update(clusters, robot, true, t);
+  return tracker.publishable(clusters, robot, t);
+}
+
+constexpr double kCloud = 1.0 / 15.0;
+
+}  // namespace
+
+TEST(Persistence, SingleSpuriousClusterIsNeverPublished)
+{
+  ClusterTracker tracker;
+  EXPECT_TRUE(step(tracker, 2.0, 0.0, true, 0.0).empty());
+  for (int k = 1; k < 10; ++k) {EXPECT_TRUE(step(tracker, 2.0, 0.0, false, k * kCloud).empty());}
+}
+
+TEST(Persistence, ConfirmedOnSecondSightingCoastsThenDrops)
+{
+  ClusterTracker tracker;
+  step(tracker, 2.0, 0.0, true, 0.0);
+  auto out = step(tracker, 2.0, 0.0, true, kCloud);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_FALSE(out[0].isCoasting);
+  for (int k = 2; k < 15; ++k) {step(tracker, 2.0, 0.0, true, k * kCloud);}
+
+  out = step(tracker, 2.0, 0.0, false, 15 * kCloud);   // missed
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_TRUE(out[0].isCoasting);
+  EXPECT_NEAR(out[0].closest.x, 1.8, 1e-6);   // standing: stays where it was seen
+
+  // Coasting points stay on the floor while the robot drives.
+  out = tracker.publishable({}, Pose2{0.5, 0.0, 0.0}, 15 * kCloud);
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_NEAR(out[0].closest.x, 1.3, 1e-6);
+
+  // Gone for good: dropped within trackTimeout.
+  int published = 1;
+  for (int k = 16; k < 31; ++k) {published = static_cast<int>(step(tracker, 2.0, 0.0, false, k * kCloud).size());}
+  EXPECT_EQ(published, 0);
+}
+
+TEST(Persistence, FlickeringObjectStaysPublished)
+{
+  // Near: missed every fifth cloud. Far (4.5 m): missed 3 clouds in a row, twice.
+  ClusterTracker near, far;
+  const std::vector<bool> farSeen = {1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 0, 0};
+  for (int k = 0; k < 40; ++k) {
+    const auto a = step(near, 1.5, 0.0, k % 5 != 4, k * kCloud);
+    const auto b = step(far, 4.5, 0.0, farSeen[static_cast<std::size_t>(k) % farSeen.size()], k * kCloud);
+    if (k >= 2) {
+      EXPECT_EQ(a.size(), 1u) << "near, cloud " << k;
+      EXPECT_EQ(b.size(), 1u) << "far, cloud " << k;
+    }
+  }
+}
+
+TEST(Persistence, OccludedObjectSurvivesLonger)
+{
+  ClusterTracker open, hidden;
+  for (int k = 0; k < 15; ++k) {
+    step(open, 3.0, 0.0, true, k * kCloud);
+    step(hidden, 3.0, 0.0, true, k * kCloud);
+  }
+  int openAlive = 0, hiddenAlive = 0;
+  for (int k = 15; k < 45; ++k) {
+    std::vector<Cluster> none;
+    open.update(none, Pose2{}, true, k * kCloud);
+    openAlive += open.publishable(none, Pose2{}, k * kCloud).empty() ? 0 : 1;
+
+    auto blocker = clusterPoints(blob(1.5, 0.0, 0.3, 25), ClusterParams{});   // something walked in between
+    hidden.update(blocker, Pose2{}, true, k * kCloud);
+    for (const auto & c : hidden.publishable(blocker, Pose2{}, k * kCloud)) {
+      if (c.isCoasting) {++hiddenAlive;}
+    }
+  }
+  EXPECT_LE(openAlive, 15);     // gone within trackTimeout
+  EXPECT_EQ(hiddenAlive, 30);   // 2 s occluded: still there
+}
+
+TEST(Persistence, DetectionFallsWithRangeAndIsZeroOutOfView)
+{
+  ClusterTracker tracker;
+  EXPECT_GT(tracker.detectionProbability(0.8), tracker.detectionProbability(4.0));
+  EXPECT_EQ(tracker.detectionProbability(0.1), 0.0);
+  EXPECT_EQ(tracker.detectionProbability(10.0), 0.0);
+}
+
+// --- motion model --------------------------------------------------------------------------------------
+
+TEST(Imm, StopIsPickedUpQuickly)
+{
+  ClusterTracker tracker;
+  double x = 2.0;
+  Cluster c;
+  int k = 0;
+  for (; k < 30; ++k) {   // walk at 1 m/s for 2 s
+    x += 1.0 * kCloud;
+    auto clusters = clusterPoints(blob(x, 0.0), ClusterParams{});
+    tracker.update(clusters, Pose2{}, true, k * kCloud);
+    c = clusters[0];
+  }
+  EXPECT_NEAR(c.velocity.x, 1.0, 0.1);
+  EXPECT_NE(c.motionMode, ImmFilter::kStatic);   // CV or CT: on a straight line they are the same
+  int stoppedAfter = -1;
+  for (int j = 0; j < 30; ++j, ++k) {   // stand
+    auto clusters = clusterPoints(blob(x, 0.0), ClusterParams{});
+    tracker.update(clusters, Pose2{}, true, k * kCloud);
+    if (stoppedAfter < 0 && clusters[0].velocity.x == 0.0) {stoppedAfter = j;}
+  }
+  ASSERT_GE(stoppedAfter, 0);
+  EXPECT_LE(stoppedAfter * kCloud, 0.5);
+}
+
+TEST(Imm, TurningModelFollowsACircleBetterThanConstantVelocity)
+{
+  ImmParams cvOnly;
+  cvOnly.initialModeProbability = {1e-9, 1.0, 1e-9};
+  cvOnly.modeSwitchRate = 0.0;
+  ImmFilter imm, cv;
+  const double radius = 2.0, speed = 1.0, R = 0.05 * 0.05;   // a person walking a curve
+  const double w = speed / radius;
+  std::mt19937 rng(3);
+  std::normal_distribution<double> noise(0.0, 0.05);
+  auto truth = [&](double t) {return Point2{radius * std::cos(w * t), radius * std::sin(w * t)};};
+  auto truthVelocity = [&](double t) {return Point2{-speed * std::sin(w * t), speed * std::cos(w * t)};};
+  imm.init(truth(0.0), R, 1.5, ImmParams{});
+  cv.init(truth(0.0), R, 1.5, cvOnly);
+  double errorImm = 0.0, errorCv = 0.0;
+  int n = 0;
+  for (int k = 1; k < 300; ++k) {
+    const double t = k * kCloud;
+    imm.predict(kCloud);
+    cv.predict(kCloud);
+    const Point2 z{truth(t).x + noise(rng), truth(t).y + noise(rng)};
+    imm.update(z, R);
+    cv.update(z, R);
+    if (k > 30) {   // after settling
+      errorImm += std::pow(distance(imm.movingVelocity(), truthVelocity(t)), 2);
+      errorCv += std::pow(distance(cv.velocity(), truthVelocity(t)), 2);
+      ++n;
+    }
+  }
+  EXPECT_LT(std::sqrt(errorImm / n), 0.85 * std::sqrt(errorCv / n));
+  EXPECT_GT(imm.modeProbability(ImmFilter::kTurning), 0.5);
+  EXPECT_NEAR(norm(imm.movingVelocity()), speed, 0.1);
+}
+
+// --- association ---------------------------------------------------------------------------------------
+
+TEST(Assignment, MinimumTotalCostNotGreedy)
+{
+  // Greedy would take (0,0) at cost 1 and leave row 1 with 10; the optimum is 2 + 2.
+  const auto a = solveAssignment({{1.0, 2.0}, {2.0, 10.0}}, 1e9);
+  EXPECT_EQ(a[0], 1);
+  EXPECT_EQ(a[1], 0);
+  const auto b = solveAssignment({{1e9, 1e9}, {3.0, 1e9}, {1.0, 1e9}}, 1e9);
+  EXPECT_EQ(b[0], -1);
+  EXPECT_EQ(b[1], -1);
+  EXPECT_EQ(b[2], 0);
+}
+
+TEST(Tracker, CrossingPeopleKeepTheirIds)
+{
+  ClusterTracker tracker;
+  int idA = -1, idB = -1;
+  for (int k = 0; k < 60; ++k) {
+    const double t = k * kCloud;
+    // A walks +x, B walks -x, 0.6 m apart in y, passing each other at t = 2 s.
+    const double ax = 1.0 + 1.0 * t, bx = 5.0 - 1.0 * t;
+    auto points = blob(ax, 0.3, 0.15, 9);
+    const auto second = blob(bx, -0.3, 0.15, 9);
+    points.insert(points.end(), second.begin(), second.end());
+    auto clusters = clusterPoints(points, ClusterParams{});
+    tracker.update(clusters, Pose2{}, true, t);
+    for (const auto & c : clusters) {
+      const bool isA = c.centroid.y > 0.0;
+      int & id = isA ? idA : idB;
+      if (k == 5) {id = c.trackId;}
+      if (k > 5) {EXPECT_EQ(c.trackId, id) << (isA ? "A" : "B") << " at cloud " << k;}
+    }
+  }
+  EXPECT_NE(idA, idB);
+}
+
+TEST(Tracker, PiecesOfOneTrackedPersonAreJoined)
+{
+  ClusterTracker tracker;
+  for (int k = 0; k < 10; ++k) {
+    auto c = clusterPoints(blob(2.0, 0.0, 0.2, 13), ClusterParams{});
+    tracker.update(c, Pose2{}, true, k * kCloud);
+  }
+  // Now seen as two legs 0.3 m apart.
+  auto points = blob(2.0, 0.15, 0.05, 5);
+  const auto other = blob(2.0, -0.15, 0.05, 5);
+  points.insert(points.end(), other.begin(), other.end());
+  auto clusters = clusterPoints(points, ClusterParams{});
+  ASSERT_EQ(clusters.size(), 2u);
+  tracker.update(clusters, Pose2{}, true, 10 * kCloud);
+  ASSERT_EQ(clusters.size(), 1u);
+  EXPECT_EQ(clusters[0].points.size(), 10u);
+  EXPECT_EQ(tracker.publishable(clusters, Pose2{}, 10 * kCloud).size(), 1u);
+}
+
+// --- clustering ------------------------------------------------------------------------------------------
+
+TEST(Clustering, SparseFarObjectIsOneCluster)
+{
+  std::vector<Point2> sparse;
+  for (int i = 0; i < 5; ++i) {sparse.push_back({5.0, -0.3 + 0.18 * i});}   // 0.18 m apart at 5 m
+  EXPECT_EQ(clusterPoints(sparse, ClusterParams{}).size(), 1u);
+  std::vector<Point2> near;
+  for (int i = 0; i < 5; ++i) {near.push_back({1.0, -0.3 + 0.18 * i});}   // same spacing near: separate points
+  EXPECT_TRUE(clusterPoints(near, ClusterParams{}).empty());
+}
+
+TEST(Clustering, WallPieceKeysStayWhileRobotMoves)
+{
+  std::vector<Point2> wall;
+  for (int i = 0; i < 100; ++i) {wall.push_back({3.0, -2.5 + 0.05 * i});}   // odom
+  std::vector<std::int64_t> before, after;
+  for (const auto & c : clusterPoints(wall, ClusterParams{}, Pose2{})) {before.push_back(c.chunkKey);}
+  for (const auto & c : clusterPoints(wall, ClusterParams{}, Pose2{0.7, 0.3, 0.4})) {after.push_back(c.chunkKey);}
+  std::sort(before.begin(), before.end());
+  std::sort(after.begin(), after.end());
+  EXPECT_EQ(before, after);
+}
+
+TEST(Clustering, FreshCentroidLeadsTheMemoryTrail)
+{
+  // A blob moving +x at 1 m/s, remembered for 0.4 s: the newest points are ahead of the full centroid.
+  ClusterParams params;
+  params.freshWindow = 0.15;
+  std::vector<StampedPoint> points;
+  for (int k = 0; k < 6; ++k) {
+    const double t = k * kCloud;
+    for (const auto & p : blob(2.0 + t, 0.0, 0.2, 7)) {points.push_back({p, t});}
+  }
+  const auto clusters = clusterPoints(points, params);
+  ASSERT_EQ(clusters.size(), 1u);
+  EXPECT_GT(clusters[0].freshPoints, 0);
+  EXPECT_GT(clusters[0].measuredCentroid.x, clusters[0].centroid.x + 0.05);
 }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -16,6 +17,13 @@ struct Point2
 {
   double x = 0.0;
   double y = 0.0;
+};
+
+// A point with the time of the cloud it came from.
+struct StampedPoint
+{
+  Point2 p;
+  double t = 0.0;
 };
 
 struct Point3
@@ -94,6 +102,11 @@ struct Cluster
   Point2 closest;        // lidar point nearest the base_link origin
   double radius = 0.0;   // largest distance of a point from the centroid
   bool isChunk = false;  // a piece of a cluster that was too large (a wall): static by assumption
+  std::int64_t chunkKey = 0;   // isChunk: the odom cell of the piece, the same from cloud to cloud
+  // Centroid of the points of the newest clouds only (the short memory leaves a trail behind moving
+  // objects; this is what the tracker measures). Equal to centroid when too few fresh points.
+  Point2 measuredCentroid;
+  int freshPoints = 0;             // points measuredCentroid is made of; 0 = fell back to all points
 
   // filled by ClusterTracker
   int trackId = -1;
@@ -101,9 +114,11 @@ struct Cluster
   double velocitySigma = kNaN;     // m/s, 1 sigma
   bool isCoasting = false;         // not seen in this cloud: last points, moved by the velocity
   double extraSigma = 0.0;         // m, added to the position sigma (grows while coasting)
+  double existence = kNaN;         // probability that the object is real (debug)
+  int motionMode = -1;             // most likely motion model: 0 static, 1 constant velocity, 2 turning (debug)
 };
 
-// Fills centroid, closest and radius from points.
+// Fills centroid, closest and radius from points; measuredCentroid is set to the centroid.
 inline void finalizeCluster(Cluster & c)
 {
   c.centroid = {0.0, 0.0};
@@ -123,6 +138,8 @@ inline void finalizeCluster(Cluster & c)
   }
   c.radius = 0.0;
   for (const auto & p : c.points) {c.radius = std::max(c.radius, distance(p, c.centroid));}
+  c.measuredCentroid = c.centroid;
+  c.freshPoints = 0;
 }
 
 // Distance from p to the nearest point of the cluster.

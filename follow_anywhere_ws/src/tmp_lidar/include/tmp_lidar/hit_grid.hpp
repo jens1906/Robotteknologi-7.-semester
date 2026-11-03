@@ -37,6 +37,12 @@ public:
   // Points (odom) of the cells occupied at time t.
   std::vector<Point2> occupiedPoints(double t, int minHits) const;
   std::vector<Point2> occupiedPoints(double t) const {return occupiedPoints(t, params_.minCellHits);}
+  // Same, with the time of the cloud each point came from.
+  std::vector<StampedPoint> occupiedStampedPoints(double t, int minHits) const;
+  std::vector<StampedPoint> occupiedStampedPoints(double t) const
+  {
+    return occupiedStampedPoints(t, params_.minCellHits);
+  }
 
   std::size_t occupiedCells(double t) const;
   void clear() {cells_.clear();}
