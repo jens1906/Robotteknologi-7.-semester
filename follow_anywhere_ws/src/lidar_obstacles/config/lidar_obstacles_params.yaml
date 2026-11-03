@@ -11,10 +11,18 @@ lidar_obstacles_node:
 
     # --- clustering -----------------------------------------------------------------------------
     cellSize: 0.10                           # m, grid cell edge
-    minPointsPerCell: 2                      # fewer points in a cell: noise
-    minClusterPoints: 5                      # fewer points in a cluster: no obstacle
-    cloudHistorySeconds: 0.35                # s of past clouds merged before clustering, moved with odometry
+    minClusterCells: 2                       # fewer occupied cells in a cluster: no obstacle
     lidarPositionUncertainty: 0.10           # m, 1 sigma of a lidar obstacle position
+
+    # --- occupancy grid (odom frame) ------------------------------------------------------------
+    lidarMountX: 0.28                        # m, beam origin in base_link (go2_bringup/config/go2_mounts.yaml)
+    lidarMountZ: 0.0                         # m, beam origin in base_link
+    hitScore: 0.85                           # added to a cell per point ending in it
+    passScore: 0.4                           # removed from a cell once per frame when a beam passes through it
+    occupiedScore: 1.0                       # cell is an obstacle above this score (two points in one frame)
+    maxCellScore: 2.0                        # cap; lower = cells an object left clear faster
+    minCellScore: -2.0                       # floor; higher = new objects show up faster in seen-free space
+    occupiedHoldSeconds: 0.0                 # s, > 0: a cell also needs a hit this recent; 0 = off
 
     # --- camera people --------------------------------------------------------------------------
     matchDistance: 0.5                       # m, a cluster this close to a predicted person belongs to that person
