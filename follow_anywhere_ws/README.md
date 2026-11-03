@@ -109,7 +109,16 @@ ros2 run perception calibrate_camera                 # terminal 2: ~15-30 s, the
 ros2 run perception calibrate_camera --ros-args -p paramsFile:=/tmp/copy.yaml   # read and write only that file
 ```
 
-It prints the saved and the new mount, the residual, the matched points and the 4×4 matrix. It saves only when the residual is small, enough camera points lie on lidar surfaces, the scene holds the camera in every direction, and the result is within 0.15 m / 15° of the saved mount; otherwise it says why (e.g. which direction is not held). The saved mount is also the start value, so keep a rough tape measurement in the file (±5 cm / ±5°).
+It first tries the saved pitch ±45° and yaw ±15° in 5° steps (the tilt is the hardest part to tape), then aligns from the best tries. It prints the overlap (depth pixels used / beyond `depthMax`, camera points above the lidar's view), the best tried tilt, the saved and the new mount, the residual, the matched points and the 4×4 matrix. It saves only when the residual is small, enough camera points lie on lidar surfaces, the scene holds the camera in every direction, and the camera position is within 0.15 m of the saved one; otherwise it says why (e.g. which direction is not held, or that camera and lidar see no common surface). Keep a rough tape measurement of the position in the file (±5 cm); check the tilt with a phone level if you can.
+
+With the camera tilted up, most of its view is ceiling and upper wall that the lidar never sees, so the walls must be close: a room corner at 2.5-3 m, not a big hall (depth beyond `depthMax`, 4.5 m, is not used).
+
+To send a calibration scene for debugging (~300 MB for 15 s, robot still):
+
+```bash
+ros2 bag record -o calib_scene /utlidar/cloud_base /camera/camera/aligned_depth_to_color/image_raw \
+  /camera/camera/color/camera_info /camera/camera/color/image_raw/compressed /tf_static
+```
 
 **Check**: in the web viewer, open `/perception/calibration_cloud` and press `c`: lidar points have intensity 0, camera points moved with the new mount intensity 1; they should lie on the same walls. Restart `perception.launch.py` to use the new mount, repeat from 2-3 spots (results should agree within ~1 cm / 0.5°), and commit `perception_params.yaml` from the Jetson.
 

@@ -3,12 +3,19 @@
 - Camera points: per-pixel median of the aligned depth frames, rays from camera_info (lens distortion removed),
   averaged per cube of voxelSize. In the camera optical frame.
 - Lidar: the stacked clouds (base_link) cut into cubes ("patches"); every flat patch gets a plane (centre + normal).
-- Point-to-plane ICP: each camera point is pulled onto the plane of the nearest patch centre among the 27
-  neighbouring cubes, patch size coarse to fine (patchSizes), Huber weights. Result: base_link <- optical frame.
-- Fit quality on the finest patches (FindQualityProblems also refuses a big jump from the saved mount): residual (robust sigma), matched points, direction points (smallest eigenvalue of
+- Tilt/yaw search: the saved mount's pitch and yaw are tried in steps of searchStep within searchPitchRange /
+  searchYawRange (the camera stays where it is); a try scores the camera points close to a lidar plane. The tilt is the
+  least certain part of a tape measurement and ICP only converges from within ~10 deg.
+- Point-to-plane ICP from the best SEARCH_STARTS_ALIGNED tries: each camera point is pulled onto the plane of the
+  nearest patch centre among the 27 neighbouring cubes, patch size coarse to fine (patchSizes), Huber weights. The try
+  with the most matched points wins. Result: base_link <- optical frame.
+- Fit quality on the finest patches: residual (robust sigma), matched points, direction points (smallest eigenvalue of
   the matched normals' scatter, ~ points on surfaces facing weakestDirection: 0 = the camera can slide that way).
+  FindQualityProblems also refuses a position jump from the saved mount and a scene without common surfaces.
+- Overlap diagnostics: depth pixels too close / used / too far / empty, and camera points above the lidar's view.
 """
 
+import dataclasses
 import math
 from dataclasses import dataclass
 
@@ -36,6 +43,16 @@ MINIMUM_STEP_POINTS = 6
 SMALLEST_STEP = 1e-6
 PSEUDO_INVERSE_CUTOFF = 1e-6
 MEDIAN_DEVIATION_TO_SIGMA = 1.4826
+
+# Tilt/yaw search
+SEARCH_PATCH_SIZE = 0.2
+SEARCH_PLANE_DISTANCE = 0.05
+SEARCH_POINT_STRIDE = 3
+SEARCH_STARTS_ALIGNED = 3
+
+# Go2 lidar view in front of the robot (measured on the go2_all_topics bags): it sees nothing above this plane
+LIDAR_VIEW_SLOPE = 0.27
+LIDAR_VIEW_START_X = 0.28
 
 
 @dataclass
@@ -65,10 +82,28 @@ class FitQuality:
 
 
 @dataclass
+class SearchStart:
+    pitchOffset: float
+    yawOffset: float
+    transform: np.ndarray
+    planePoints: int
+
+
+@dataclass
+class DepthCoverage:
+    emptyShare: float
+    tooCloseShare: float
+    usedShare: float
+    tooFarShare: float
+
+
+@dataclass
 class RegistrationResult:
     transform: np.ndarray
     startQuality: FitQuality
     quality: FitQuality
+    bestSearchStart: SearchStart
+    aboveLidarViewShare: float
     cameraPointCount: int
     lidarPointCount: int
 
@@ -154,14 +189,57 @@ def MatchCameraPoints(cameraPoints, patchMap, transform):
     return movedPoints[matched], normals, residuals
 
 
-def AlignCameraToLidar(cameraPoints, lidarPoints, startTransform, settings):
+def AlignCameraToLidar(cameraPoints, lidarPoints, savedMount, opticalToCameraTransform, settings):
     finePatchMap = BuildPatchMap(lidarPoints, settings.patchSizes[-1])
-    startQuality = MeasureFit(cameraPoints, finePatchMap, startTransform)
-    transform = startTransform
-    for patchSize in settings.patchSizes:
-        transform = AlignOnPatches(cameraPoints, BuildPatchMap(lidarPoints, patchSize), transform)
-    return RegistrationResult(transform, startQuality, MeasureFit(cameraPoints, finePatchMap, transform),
-                              len(cameraPoints), len(lidarPoints))
+    stagePatchMaps = [BuildPatchMap(lidarPoints, patchSize) for patchSize in settings.patchSizes]
+    startQuality = MeasureFit(cameraPoints, finePatchMap, MakeMountTransform(savedMount) @ opticalToCameraTransform)
+    searchStarts = SearchStartTransforms(cameraPoints, BuildPatchMap(lidarPoints, SEARCH_PATCH_SIZE), savedMount,
+                                         opticalToCameraTransform, settings)
+    candidateResults = []
+    for searchStart in searchStarts[:SEARCH_STARTS_ALIGNED]:
+        transform = searchStart.transform
+        for stagePatchMap in stagePatchMaps:
+            transform = AlignOnPatches(cameraPoints, stagePatchMap, transform)
+        candidateResults.append(RegistrationResult(
+            transform, startQuality, MeasureFit(cameraPoints, finePatchMap, transform), searchStarts[0],
+            MeasureAboveLidarViewShare(cameraPoints, searchStarts[0].transform), len(cameraPoints), len(lidarPoints)))
+    return max(candidateResults, key=lambda result: (result.quality.matchedPoints, -result.quality.residual))
+
+
+def SearchStartTransforms(cameraPoints, searchPatchMap, savedMount, opticalToCameraTransform, settings):
+    searchPoints = cameraPoints[::SEARCH_POINT_STRIDE]
+    searchStarts = []
+    for pitchOffset in MakeSearchOffsets(settings.searchPitchRange, settings.searchStep):
+        for yawOffset in MakeSearchOffsets(settings.searchYawRange, settings.searchStep):
+            triedMount = dataclasses.replace(savedMount, pitch=savedMount.pitch + pitchOffset,
+                                             yaw=savedMount.yaw + yawOffset)
+            transform = MakeMountTransform(triedMount) @ opticalToCameraTransform
+            _, _, residuals = MatchCameraPoints(searchPoints, searchPatchMap, transform)
+            planePoints = int(np.count_nonzero(np.abs(residuals) <= SEARCH_PLANE_DISTANCE)) * SEARCH_POINT_STRIDE
+            searchStarts.append(SearchStart(pitchOffset, yawOffset, transform, planePoints))
+    return sorted(searchStarts, key=lambda searchStart: searchStart.planePoints, reverse=True)
+
+
+def MakeSearchOffsets(searchRange, searchStep):
+    stepCount = int(round(searchRange / searchStep)) if searchStep > 0 else 0
+    return [stepIndex * searchStep for stepIndex in range(-stepCount, stepCount + 1)]
+
+
+def MeasureAboveLidarViewShare(cameraPoints, transform):
+    if len(cameraPoints) == 0:
+        return 0.0
+    movedPoints = TransformPoints(transform, cameraPoints)
+    lidarViewTop = LIDAR_VIEW_SLOPE * (movedPoints[:, 0] - LIDAR_VIEW_START_X)
+    return float(np.mean(movedPoints[:, 2] > lidarViewTop))
+
+
+def MeasureDepthCoverage(depthFrame, settings):
+    pixelCount = depthFrame.size
+    return DepthCoverage(float(np.count_nonzero(depthFrame <= 0.0)) / pixelCount,
+                         float(np.count_nonzero((depthFrame > 0.0) & (depthFrame < settings.depthMin))) / pixelCount,
+                         float(np.count_nonzero((depthFrame >= settings.depthMin)
+                                                & (depthFrame <= settings.depthMax))) / pixelCount,
+                         float(np.count_nonzero(depthFrame > settings.depthMax)) / pixelCount)
 
 
 def AlignOnPatches(cameraPoints, patchMap, transform):
@@ -196,13 +274,17 @@ def MeasureFit(cameraPoints, patchMap, transform):
     return FitQuality(residual, len(residuals), float(eigenValues[0]), eigenVectors[:, 0])
 
 
-def FindQualityProblems(result, changeDistance, changeAngle, settings):
+def FindQualityProblems(result, changeDistance, settings):
     quality = result.quality
     qualityProblems = []
-    if changeDistance > settings.maximumChangeDistance or changeAngle > settings.maximumChangeAngle:
-        qualityProblems.append(f'moved {changeDistance * 1000:.0f} mm / {math.degrees(changeAngle):.1f} deg from the saved '
-                               f'mount (> {settings.maximumChangeDistance * 1000:.0f} mm / '
-                               f'{math.degrees(settings.maximumChangeAngle):.0f} deg): wrong match or the saved mount is '
+    if result.bestSearchStart.planePoints < settings.minimumMatchedPoints:
+        qualityProblems.append(f'camera and lidar see almost no common surface at any tried tilt (best '
+                               f'{result.bestSearchStart.planePoints} points, {result.aboveLidarViewShare:.0%} of the '
+                               'camera points above the lidar view): walls closer than depthMax, low enough for the '
+                               'lidar (see README)')
+    if changeDistance > settings.maximumChangeDistance:
+        qualityProblems.append(f'camera moved {changeDistance * 1000:.0f} mm from the saved mount '
+                               f'(> {settings.maximumChangeDistance * 1000:.0f} mm): wrong match or the saved position is '
                                'far off, measure it again roughly')
     if quality.residual > settings.maximumResidual:
         qualityProblems.append(f'residual {quality.residual * 1000:.0f} mm > {settings.maximumResidual * 1000:.0f} mm '

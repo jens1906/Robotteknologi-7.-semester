@@ -32,7 +32,7 @@ from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
@@ -41,7 +41,8 @@ from std_msgs.msg import Header, String
 from perception.camera_lidar_registration import (CameraMount, AlignCameraToLidar, BuildCameraPoints,
                                                   DownsampleVoxels, FindQualityProblems, MakeCameraMount,
                                                   MakeMountTransform, MakeRotationFromQuaternion, MakeTransform,
-                                                  MeasureMountChange, StackLidarPoints, TransformPoints)
+                                                  MeasureDepthCoverage, MeasureMountChange, StackLidarPoints,
+                                                  TransformPoints)
 from perception.coordinate_conversion import ConvertDepthImage
 
 # Parameter defaults (set in the camera_calibration section of config/perception_params.yaml; paramsFile only with -p)
@@ -57,7 +58,9 @@ CALIBRATION_SETTING_DEFAULTS = {
     'minimumMatchedPoints': 2000,
     'minimumDirectionPoints': 100,
     'maximumChangeDistance': 0.15,
-    'maximumChangeAngle': 0.26,
+    'searchPitchRange': 0.79,
+    'searchYawRange': 0.26,
+    'searchStep': 0.087,
 }
 
 # Params file
@@ -70,6 +73,9 @@ COMMENT_GAP = 2
 # Frames
 BASE_FRAME = 'base_link'
 CAMERA_FRAME = 'camera_link'
+
+# Lidar subscription
+LIDAR_QUEUE_DEPTH = 10
 
 # Progress and check cloud
 PROGRESS_PERIOD_SECONDS = 1.0
@@ -112,7 +118,8 @@ class CameraCalibrationNode(Node):
         self.debugPublisher = self.create_publisher(String, '/perception/debug', 10)
 
         # Input topics
-        self.create_subscription(PointCloud2, '/utlidar/cloud_base', self.HandleLidarCloud, qos_profile_sensor_data)
+        publisherMatchingQos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_AVAILABLE, depth=LIDAR_QUEUE_DEPTH)
+        self.create_subscription(PointCloud2, '/utlidar/cloud_base', self.HandleLidarCloud, publisherMatchingQos)
         self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.HandleDepthImage,
                                  qos_profile_sensor_data)
         self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.HandleCameraInfo,
@@ -171,16 +178,15 @@ class CameraCalibrationNode(Node):
             self.PublishDebugMessage('CameraCalibration', f'calibration failed: {error}')
 
     def RunCalibration(self, opticalToCameraTransform):
-        self.get_logger().info('CameraCalibration: data collected, aligning (robot may move again)')
+        self.get_logger().info('CameraCalibration: data collected, searching the tilt and aligning (robot may move again, ~30 s on the Jetson)')
         cameraMatrix = np.array(self.cameraInfo.k, dtype=np.float64).reshape(3, 3)
         cameraPoints = BuildCameraPoints(self.depthFrames, cameraMatrix, np.array(self.cameraInfo.d), self.settings)
         lidarPoints = StackLidarPoints(self.lidarClouds, self.settings)
-        startTransform = MakeMountTransform(self.savedMount) @ opticalToCameraTransform
-        result = AlignCameraToLidar(cameraPoints, lidarPoints, startTransform, self.settings)
+        result = AlignCameraToLidar(cameraPoints, lidarPoints, self.savedMount, opticalToCameraTransform, self.settings)
         newMount = MakeCameraMount(result.transform @ np.linalg.inv(opticalToCameraTransform))
         changeDistance, changeAngle = MeasureMountChange(self.savedMount, newMount)
         self.LogResult(newMount, result, changeDistance, changeAngle)
-        qualityProblems = FindQualityProblems(result, changeDistance, changeAngle, self.settings)
+        qualityProblems = FindQualityProblems(result, changeDistance, self.settings)
         if qualityProblems:
             self.PublishDebugMessage('CameraCalibration', 'not saved: ' + '; '.join(qualityProblems))
         else:
@@ -192,8 +198,17 @@ class CameraCalibrationNode(Node):
 
     def LogResult(self, newMount, result, changeDistance, changeAngle):
         weakestX, weakestY, weakestZ = result.quality.weakestDirection
+        depthCoverage = MeasureDepthCoverage(self.depthFrames[-1], self.settings)
+        bestSearchStart = result.bestSearchStart
         self.get_logger().info(
             f'CameraCalibration: {result.cameraPointCount} camera points, {result.lidarPointCount} lidar points\n'
+            f'  depth pixels: {depthCoverage.usedShare:.0%} used, {depthCoverage.tooFarShare:.0%} beyond depthMax '
+            f'{self.settings.depthMax} m, {depthCoverage.tooCloseShare:.0%} closer than depthMin, '
+            f'{depthCoverage.emptyShare:.0%} without depth\n'
+            f'  camera points above the lidar view: {result.aboveLidarViewShare:.0%} (at the best tried tilt)\n'
+            f'  tilt search: best pitch {math.degrees(bestSearchStart.pitchOffset):+.0f} deg, yaw '
+            f'{math.degrees(bestSearchStart.yawOffset):+.0f} deg from the saved mount, {bestSearchStart.planePoints} '
+            f'points near lidar planes\n'
             f'  start:  {FormatQuality(result.startQuality)}\n'
             f'  result: {FormatQuality(result.quality)}, weakest direction ({weakestX:.2f}, {weakestY:.2f}, '
             f'{weakestZ:.2f})\n'

@@ -103,5 +103,7 @@ camera_calibration:
     maximumResidual: 0.025                   # GUESS: m, robust sigma of the point-to-plane distances (lidar noise alone is ~0.01)
     minimumMatchedPoints: 2000               # GUESS: camera points on lidar surfaces (a count: most of the tilted view has no lidar)
     minimumDirectionPoints: 100              # CHOSEN: ~ camera points on surfaces facing the weakest direction; synthetic room: walls only 15-35, with the board 208-257
-    maximumChangeDistance: 0.15              # GUESS: m, a result farther from the saved (tape) mount is a wrong match: not saved
-    maximumChangeAngle: 0.26                 # GUESS: rad (15 deg), same for the rotation
+    maximumChangeDistance: 0.15              # GUESS: m, a camera position farther from the saved (tape) one is a wrong match: not saved (bad Jetson runs moved > 1 m)
+    searchPitchRange: 0.79                   # CHOSEN: rad (45 deg), tilts tried around the saved pitch before ICP (first Jetson runs: the saved tilt was ~40 deg off)
+    searchYawRange: 0.26                     # GUESS: rad (15 deg), same for the yaw
+    searchStep: 0.087                        # GUESS: rad (5 deg) between tries; ICP converges from within ~10 deg
