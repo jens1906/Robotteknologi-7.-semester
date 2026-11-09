@@ -13,6 +13,9 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
   <depend>follow_anywhere_interfaces</depend>
   <depend>ament_index_cpp</depend>
   <depend>rosidl_typesupport_introspection_cpp</depend>

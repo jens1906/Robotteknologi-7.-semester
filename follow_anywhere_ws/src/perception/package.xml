@@ -31,6 +31,8 @@
   <!-- lets the RealSense driver also publish .../image_raw/compressed (JPEG) for the viewer;
        compression only runs while someone subscribes to it -->
   <exec_depend>compressed_image_transport</exec_depend>
+  <!-- launch arg depthCloud: point cloud from the aligned depth for the web viewer -->
+  <exec_depend>depth_image_proc</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

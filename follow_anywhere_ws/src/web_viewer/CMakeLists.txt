@@ -17,6 +17,9 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(follow_anywhere_interfaces REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
@@ -37,6 +40,9 @@ target_link_libraries(web_viewer
   ${sensor_msgs_TARGETS}
   ${std_msgs_TARGETS}
   ${std_srvs_TARGETS}
+  ${geometry_msgs_TARGETS}
+  tf2::tf2
+  tf2_ros::tf2_ros
   ${follow_anywhere_interfaces_TARGETS}
   ament_index_cpp::ament_index_cpp
   ${rosidl_typesupport_introspection_cpp_TARGETS}

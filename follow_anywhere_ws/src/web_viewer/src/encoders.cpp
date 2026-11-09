@@ -146,4 +146,19 @@ std::vector<float> scan_points(const sensor_msgs::msg::LaserScan & scan)
   return out;
 }
 
+void transform_points(std::vector<float> & pts, const geometry_msgs::msg::Transform & t)
+{
+  const double qx = t.rotation.x, qy = t.rotation.y, qz = t.rotation.z, qw = t.rotation.w;
+  const double r[9] = {
+    1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw),
+    2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw),
+    2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)};
+  for (size_t i = 0; i + 3 < pts.size(); i += 4) {
+    double x = pts[i], y = pts[i + 1], z = pts[i + 2];
+    pts[i] = static_cast<float>(r[0] * x + r[1] * y + r[2] * z + t.translation.x);
+    pts[i + 1] = static_cast<float>(r[3] * x + r[4] * y + r[5] * z + t.translation.y);
+    pts[i + 2] = static_cast<float>(r[6] * x + r[7] * y + r[8] * z + t.translation.z);
+  }
+}
+
 }  // namespace web_viewer

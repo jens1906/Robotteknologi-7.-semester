@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include <geometry_msgs/msg/transform.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
@@ -26,5 +27,8 @@ std::string encode_image(const sensor_msgs::msg::Image & img, const ImageOptions
 // thinned to at most max_points by a fixed stride.
 std::vector<float> cloud_points(const sensor_msgs::msg::PointCloud2 & pc, size_t max_points);
 std::vector<float> scan_points(const sensor_msgs::msg::LaserScan & scan);
+
+// Moves x,y,z,intensity points in place by a rigid transform (rotation, then translation).
+void transform_points(std::vector<float> & pts, const geometry_msgs::msg::Transform & t);
 
 }  // namespace web_viewer

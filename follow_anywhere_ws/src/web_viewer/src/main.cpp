@@ -46,6 +46,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <tf2_ros/buffer.hpp>
+#include <tf2_ros/transform_listener.hpp>
 
 #include "encoders.hpp"
 #include "msg_json.hpp"
@@ -179,6 +181,8 @@ public:
     auto www = declare_parameter<std::string>("www_root", "");
     image_hz_ = declare_parameter<double>("image_hz", 15.0);
     cloud_hz_ = declare_parameter<double>("cloud_hz", 10.0);
+    // Clouds in another frame are moved into this one with TF ("" = draw each in its own frame).
+    cloud_frame_ = declare_parameter<std::string>("cloud_frame", "base_link");
     json_hz_ = declare_parameter<double>("json_hz", 10.0);
     max_points_ = declare_parameter<int>("max_points", 40000);
     max_array_ = declare_parameter<int>("max_array", 64);
@@ -192,7 +196,8 @@ public:
     bag_directory_ = declare_parameter<std::string>("bag_directory", WEB_VIEWER_BAG_DIR);
     exclude_regex_ = declare_parameter<std::string>(
       "record_exclude_regex",
-      ".*/image_raw$|.*/image_rect_raw$|.*/theora$|.*/zstd$|^/config_change_status$");
+      "^(?!/camera/camera/(color|aligned_depth_to_color)/image_raw$).*/image_raw$|"
+      ".*/image_rect_raw$|.*/theora$|.*/zstd$|^/config_change_status$");
 
     if (www.empty()) {
       www = (ament_index_cpp::get_package_share_path("web_viewer") / "www").string();
@@ -205,6 +210,8 @@ public:
     calibrate_client_ = create_client<follow_anywhere_interfaces::srv::PerceptionCalibrateLeader>(
       "/perception/calibrate_leader");
     clear_client_ = create_client<std_srvs::srv::Trigger>("/perception/clear_leader");
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+    tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
     // Output topics
     debug_pub_ = create_publisher<std_msgs::msg::String>("/web_viewer/debug", 10);
 
@@ -663,6 +670,18 @@ private:
             if (pts.empty() && pc.width * pc.height > 0) {
               warn_once(st, clients, "cloud has no float32 x/y/z fields");
             }
+            if (!cloud_frame_.empty() && !pc.header.frame_id.empty() &&
+              pc.header.frame_id != cloud_frame_)
+            {
+              try {
+                auto t = tf_buffer_->lookupTransform(
+                  cloud_frame_, pc.header.frame_id, tf2::TimePointZero);
+                transform_points(pts, t.transform);
+              } catch (const tf2::TransformException & e) {
+                warn_once(st, clients, "no TF " + cloud_frame_ + " <- " + pc.header.frame_id +
+                  ", drawn in its own frame");
+              }
+            }
             out = binary_frame(3, st.topic, pts.data(), pts.size() * sizeof(float));
             break;
           }
@@ -735,6 +754,9 @@ private:
   }
 
   double image_hz_, cloud_hz_, json_hz_;
+  std::string cloud_frame_;
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   int64_t max_points_, max_array_, pair_buffer_;
   ImageOptions img_opt_;
   std::vector<std::string> defaults_;

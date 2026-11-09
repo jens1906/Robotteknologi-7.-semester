@@ -3,6 +3,7 @@
     ros2 launch perception perception.launch.py
     ros2 launch perception perception.launch.py startCamera:=false     # replaying a rosbag (bag has no TF)
     ros2 launch perception perception.launch.py startCamera:=false useSimTime:=true   # bag played with --clock
+    ros2 launch perception perception.launch.py depthCloud:=true   # + a point cloud rebuilt from the aligned depth
 
 The camera mounting (base_link -> camera_link) is cameraX..cameraYaw in the params file (written by
 `ros2 run perception calibrate_camera`); it is read at every start, so a new calibration is used from the next start.
@@ -47,6 +48,8 @@ def generate_launch_description():
                               description='start the RealSense driver (false when replaying a rosbag)'),
         DeclareLaunchArgument('useSimTime', default_value='false',
                               description='use the /clock of a rosbag played with --clock (needed with odometry in the bag)'),
+        DeclareLaunchArgument('depthCloud', default_value='false',
+                              description='rebuild a point cloud from the aligned depth for the web viewer (costs CPU)'),
     ]
 
     # colour + depth aligned to colour, 640x480 at 30 fps. Topics: /camera/camera/color/image_raw,
@@ -75,8 +78,18 @@ def generate_launch_description():
                    '--frame-id', 'camera_link', '--child-frame-id', 'camera_color_optical_frame'],
         condition=UnlessCondition(LaunchConfiguration('startCamera')))
 
+    # point cloud from the aligned depth (camera_info is found next to the image topic); for display only,
+    # the bags record the depth image instead of this cloud
+    depth_cloud = Node(
+        package='depth_image_proc', executable='point_cloud_xyz_node', name='depth_cloud',
+        remappings=[('image_rect', '/camera/camera/aligned_depth_to_color/image_raw'),
+                    ('camera_info', '/camera/camera/aligned_depth_to_color/camera_info'),
+                    ('points', '/camera/camera/aligned_depth_to_color/points')],
+        parameters=[{'use_sim_time': LaunchConfiguration('useSimTime')}],
+        condition=IfCondition(LaunchConfiguration('depthCloud')))
+
     perception = Node(
         package='perception', executable='perception_node', name='perception_node', output='screen',
         parameters=[LaunchConfiguration('paramsFile'), {'use_sim_time': LaunchConfiguration('useSimTime')}])
 
-    return LaunchDescription([*args, realsense, camera_mount, camera_optical, perception])
+    return LaunchDescription([*args, realsense, camera_mount, camera_optical, depth_cloud, perception])
