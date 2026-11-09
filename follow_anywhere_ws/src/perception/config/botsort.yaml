@@ -1,5 +1,5 @@
 # BoT-SORT (motion + camera-motion compensation, no appearance model) for the person detector.
-# Settings carried over from the KPR/OSNet tests (commit b6ff4c4, botsort_tuned.yaml), where they
+# Settings carried over from the earlier OSNet tests (botsort_tuned.yaml), where they
 # were scored against MOT17 ground truth: better than ByteTrack and better than using the YOLO
 # detector's features as appearance (that one linked the wrong people, ~3x the ID switches).
 #
