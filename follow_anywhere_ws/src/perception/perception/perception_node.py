@@ -174,9 +174,11 @@ class PerceptionNode(Node):
         trackerConfigPath = os.path.join(get_package_share_directory('perception'), 'config', self.trackerConfigFile)
         self.personDetector = PersonDetector(self.ResolveModelPath(self.detectorModelFile), trackerConfigPath,
                                              self.detectorImageSize, self.minimumBoxSizePixels, self.requestedDevice)
+        self.get_logger().info(f'PersonDetector: running on {self.personDetector.inferenceDevice}')
         if self.personDetector.inferenceDeviceWarning:
             self.PublishDebugMessage('PersonDetector', self.personDetector.inferenceDeviceWarning)
         self.reidModel = ReidModel(self.ResolveModelPath(self.reidModelFile), self.requestedDevice, self.reidThreads)
+        self.get_logger().info(f'ReidModel: running on {self.reidModel.session.get_providers()[0]}')
         if self.reidModel.deviceWarning:
             self.PublishDebugMessage('ReidModel', self.reidModel.deviceWarning)
         self.leaderManager = LeaderManager(leaderSettings)
@@ -194,6 +196,7 @@ class PerceptionNode(Node):
         self.create_subscription(Image, '/camera/camera/color/image_raw', self.HandleColorImage, newestMessageQos)
 
     def HandleColorImage(self, colorImageMessage):
+        frameStartSeconds = time.perf_counter()
         imageSeconds = ConvertStampToSeconds(colorImageMessage.header.stamp)
         try:
             imageBgr = self.imageBridge.imgmsg_to_cv2(colorImageMessage, COLOR_IMAGE_ENCODING)
@@ -222,8 +225,8 @@ class PerceptionNode(Node):
         self.obstaclesPublisher.publish(
             self.BuildObstaclesMessage(detectedPeople, peopleEstimates, peopleCircles, leaderClosestPoint, header))
         self.debugFramePublisher.publish(self.BuildDebugFrameMessage(
-            detectedPeople, peoplePositions, peopleEstimates, leaderPosition, detectorTimeMilliseconds, imageSeconds,
-            header))
+            detectedPeople, peoplePositions, peopleEstimates, leaderPosition, detectorTimeMilliseconds, frameStartSeconds,
+            imageSeconds, header))
 
     def HandleDepthImage(self, depthImageMessage):
         self.depthImagesByStamp[ConvertStampToSeconds(depthImageMessage.header.stamp)] = depthImageMessage
@@ -466,7 +469,7 @@ class PerceptionNode(Node):
         return obstaclesMessage
 
     def BuildDebugFrameMessage(self, detectedPeople, peoplePositions, peopleEstimates, leaderPosition,
-                               detectorTimeMilliseconds, imageSeconds, header):
+                               detectorTimeMilliseconds, frameStartSeconds, imageSeconds, header):
         debugFrameMessage = PerceptionDebugFrame()
         debugFrameMessage.header = header
         debugFrameMessage.odometry_age = math.nan
@@ -492,6 +495,7 @@ class PerceptionNode(Node):
         debugFrameMessage.reid_time_ms = self.reidSecondsInFrame * 1000.0
         debugFrameMessage.reid_crop_count = self.reidCropCountInFrame
         debugFrameMessage.people_count = len(detectedPeople)
+        debugFrameMessage.frame_time_ms = (time.perf_counter() - frameStartSeconds) * 1000.0
         for detectedPerson in detectedPeople:
             debugPerson = PerceptionDebugPerson()
             debugPerson.id = detectedPerson.trackId

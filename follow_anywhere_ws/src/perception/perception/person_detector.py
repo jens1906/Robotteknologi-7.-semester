@@ -27,6 +27,7 @@ REQUESTED_DEVICE = 'auto'
 
 # Detection
 PERSON_CLASS_ID = 0
+HALF_PRECISION = 16
 NO_CUDA_GPU_WARNING = 'no CUDA GPU found, the detector runs on the CPU which is slow'
 
 
@@ -57,12 +58,14 @@ class PersonDetector:
         self.detectorImageSize = detectorImageSize
         self.minimumBoxSizePixels = minimumBoxSizePixels
         self.inferenceDevice, self.inferenceDeviceWarning = SelectInferenceDevice(requestedDevice)
+        self.inferencePrecision = HALF_PRECISION if self.inferenceDevice.startswith('cuda') else None
         self.model = YOLO(detectorModelPath)
 
     def DetectAndTrackPeople(self, imageBgr):
         trackingResult = self.model.track(imageBgr, persist=True, tracker=self.trackerConfigPath,
                                           classes=[PERSON_CLASS_ID], imgsz=self.detectorImageSize,
-                                          device=self.inferenceDevice, verbose=False)[0]
+                                          device=self.inferenceDevice, quantize=self.inferencePrecision,
+                                          verbose=False)[0]
         if trackingResult.boxes is None or trackingResult.boxes.id is None:
             return []
         trackIds = trackingResult.boxes.id.int().tolist()

@@ -33,5 +33,6 @@ float32 detector_time_ms                   # person detector + tracker
 float32 reid_time_ms                       # OSNet, all crops of this frame
 int32 reid_crop_count                      # crops OSNet embedded this frame
 int32 people_count                         # people tracked this frame
+float32 frame_time_ms                      # whole frame callback: image conversion, detector, OSNet, positions, velocities
 
 PerceptionDebugPerson[] people
