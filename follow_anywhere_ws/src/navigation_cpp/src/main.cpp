@@ -167,11 +167,11 @@ public:
           this->leader_callback(msg);
         });
     obstacles_sub = create_subscription<PerceptionObstacleArray>(
-        "/perception/obstacles", 10,
+        "/perception/obstacles_combined", 10,
         [this](const PerceptionObstacleArray::SharedPtr msg) {
           this->obstacles_callback(msg);
         });
-    const double rate = declare_parameter("rate", 10.0);
+    const double rate = declare_parameter("rate", 15.0);
     dt = 1.0 / rate;
     timer = create_wall_timer(duration<double>(dt),
                               [this]() { this->timer_callback(); });
