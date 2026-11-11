@@ -335,7 +335,7 @@ public:
     const Eigen::Vector2d Q = Eigen::Vector2d(8.0, 0.25);
     const Eigen::Vector3d R = Eigen::Vector3d(5.0, 5.0, 1.0);
     const Eigen::Vector3d S =
-        Eigen::Vector3d(3.0, 3.0, 1.0); // Δu weights: vx, vy, wz
+        Eigen::Vector3d(4.0, 4.0, 0.5); // Δu weights: vx, vy, wz
 
     Eigen::Vector3d u_prev = Eigen::Vector3d::Zero();
     if (last_path_valid)
@@ -348,8 +348,8 @@ public:
     double hard_margin = 0.3;
     double soft_margin = 0.7;
     double leader_margin = 1.5;
-    double margin_cost = 50.0;
-    double margin_cost_linear = 10.0;
+    double margin_cost = 20.0;
+    double margin_cost_linear = 5.0;
     // exact penalty on breaking the hard margin; keeps the QP always feasible
     double hard_cost_quadratic = 1000.0;
     double hard_cost_linear = 1000.0;
@@ -640,7 +640,7 @@ public:
     } else {
       OSQPSettings settings;
       osqp_set_default_settings(&settings);
-      settings.time_limit = 0.5 * dt;
+      settings.time_limit = 0.7 * dt;
       settings.verbose = 0;
       if (osqp_setup(&solver, &P_csc, q.data(), &A_csc, l.data(), u.data(),
                      n_rows, n_vars, &settings) != 0) {
