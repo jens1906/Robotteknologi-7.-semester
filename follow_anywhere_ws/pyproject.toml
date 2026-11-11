@@ -6,22 +6,31 @@ readme = "README.md"
 authors = [
     { name = "Jens Søby Hansen", email = "jens1906@gmail.com" }
 ]
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 dependencies = [
+    "catkin-pkg>=1.0",
+    "empy==3.3.4",
     "lap>=0.5.13",
+    "lark>=1.1",
     "motmetrics>=1.4.0",
-    "onnxruntime>=1.31.0",
+    "onnxruntime-gpu>=1.24.0",
     "opencv-python>=5.0.0.93",
     "transformers>=5.19.0",
     "ultralytics>=8.4.176",
 ]
 
-[project.scripts]
-follow-anywhere-ws = "follow_anywhere_ws:main"
+[tool.uv]
+package = false
+python-preference = "only-system"
+environments = ["sys_platform == 'linux'"]
 
-[build-system]
-requires = ["uv_build>=0.13.0,<0.14.0"]
-build-backend = "uv_build"
+[[tool.uv.index]]
+name = "jetson-ai-lab"
+url = "https://pypi.jetson-ai-lab.io/sbsa/cu130/+simple/"
+explicit = true
+
+[tool.uv.sources]
+onnxruntime-gpu = { index = "jetson-ai-lab", marker = "sys_platform == 'linux' and platform_machine == 'aarch64'" }
 
 
 
