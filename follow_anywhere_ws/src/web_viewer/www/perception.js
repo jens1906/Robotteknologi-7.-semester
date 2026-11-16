@@ -33,6 +33,7 @@ const STATE_COLORS = ['#ffffff', '#ffdc00', '#00dc00', '#ffa500', '#ff3c3c'];
 const CERTAIN_COLOR = '#3fb950';
 const UNSURE_COLOR = '#e3b341';
 const WRONG_COLOR = '#f85149';
+const UNKNOWN_COLOR = '#8b949e';
 const BAR_BACKGROUND_COLOR = 'rgba(0, 0, 0, 0.65)';
 const BAR_TICK_COLOR = '#ffffff';
 const MAP_BACKGROUND_COLOR = '#0b0e12';
@@ -495,19 +496,32 @@ function DrawTrackedPerson(context, trackedPerson) {
   let labelText = trackedPerson.is_leader ? `LEADER #${trackedPerson.id}` : `#${trackedPerson.id}`;
   if (trackedPerson.reid_distance !== null) {
     labelText += `  reid ${trackedPerson.reid_distance.toFixed(2)}`;
+  } else if (IsKnownNumber(trackedPerson.reid_shared_area)) {
+    labelText += '  reid unknown';
+  }
+  if (IsKnownNumber(trackedPerson.reid_shared_area)) {
+    labelText += `  area ${(trackedPerson.reid_shared_area * 100).toFixed(0)}%`;
+  }
+  if (IsKnownNumber(trackedPerson.motion_gate_distance)) {
+    labelText += `  gate ${trackedPerson.motion_gate_distance.toFixed(1)}σ`;
   }
   if (trackedPerson.position_valid) {
     labelText += `  ${Math.hypot(trackedPerson.position.x, trackedPerson.position.y).toFixed(1)} m`;
   }
   DrawLabel(context, labelText, trackedPerson.x_min, trackedPerson.y_min, boxColor, LABEL_FONT);
-  DrawCertaintyBar(context, trackedPerson.reid_distance, trackedPerson.x_min, trackedPerson.y_min + 2, boxWidth);
+  DrawCertaintyBar(context, trackedPerson.reid_distance, IsKnownNumber(trackedPerson.reid_shared_area),
+    trackedPerson.x_min, trackedPerson.y_min + 2, boxWidth);
 }
 
-function DrawCertaintyBar(context, reidDistance, left, top, boxWidth) {
+function DrawCertaintyBar(context, reidDistance, wasCompared, left, top, boxWidth) {
   const barWidth = Math.max(boxWidth, CERTAINTY_BAR_MIN_WIDTH_PIXELS);
   context.fillStyle = BAR_BACKGROUND_COLOR;
   context.fillRect(left, top, barWidth, CERTAINTY_BAR_HEIGHT_PIXELS);
   if (reidDistance === null) {
+    if (wasCompared) {
+      context.fillStyle = UNKNOWN_COLOR;
+      context.fillRect(left, top, barWidth, CERTAINTY_BAR_HEIGHT_PIXELS);
+    }
     return;
   }
   context.fillStyle = PickCertaintyColor(reidDistance);
@@ -777,6 +791,10 @@ function ConvertToMapPixels(mapFrame, point) {
     x: mapFrame.robotX - point.y * mapFrame.pixelsPerMeter,
     y: mapFrame.robotY - point.x * mapFrame.pixelsPerMeter,
   };
+}
+
+function IsKnownNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function IsValidPoint(point) {

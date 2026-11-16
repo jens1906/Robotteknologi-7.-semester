@@ -7,6 +7,8 @@
 - PredictFilter: moves the state ahead to a time; the uncertainty grows.
 - UpdateFilter: takes a measured position with its 2x2 covariance (depth noise + uncertainty of the robot's pose).
 - ReadPositionSigma / ReadVelocitySigma: 1 sigma along the worst axis.
+- CalculateGateDistance: how far a measured position is from the filter's position, in sigmas (Mahalanobis
+  distance with the filter's and the measurement's uncertainty).
 """
 
 import math
@@ -66,3 +68,9 @@ def ReadPositionSigma(personFilter):
 
 def ReadVelocitySigma(personFilter):
     return math.sqrt(max(np.linalg.eigvalsh(personFilter.covariance[2:, 2:]).max(), 0.0))
+
+
+def CalculateGateDistance(personFilter, positionX, positionY, measurementCovariance):
+    offset = np.array([positionX, positionY]) - personFilter.state[:2]
+    offsetCovariance = personFilter.covariance[:2, :2] + measurementCovariance
+    return math.sqrt(max(float(offset @ np.linalg.solve(offsetCovariance, offset)), 0.0))

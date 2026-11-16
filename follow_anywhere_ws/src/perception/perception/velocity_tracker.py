@@ -12,6 +12,10 @@
 - One leader filter kept across track id changes (re-identification says it is the same person); restarted after
   the leader was gone longer than graceTime. While the leader is not measured it is only predicted: the velocity
   of the last measurement is held, the uncertainty grows.
+- Motion gate for leader_manager: PredictLeader moves the leader filter to the image time, CalculateLeaderGateDistance
+  says how many sigmas a measured person is from that prediction (NaN when there is no leader filter).
+- IsInFrontOfLeader: a measurement more than occlusionDepthSigma closer to the robot than the predicted leader. While
+  someone overlaps the leader that is the person in front, so the node does not feed it to the leader filter.
 - Standing still: a speed below minimumSpeed or below STANDING_SIGMAS * its uncertainty is reported as 0, with the
   uncertainty kept (a new person is "0 +- unknownVelocitySigma", never "certainly standing still").
 - ClockOffsetEstimator: the Go2 stamps odometry with its own clock (measured ~38 s off from the PC, constant within
@@ -25,7 +29,8 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from perception.kalman_filter import CreateFilter, PredictFilter, ReadPositionSigma, ReadVelocitySigma, UpdateFilter
+from perception.kalman_filter import (CalculateGateDistance, CreateFilter, PredictFilter, ReadPositionSigma,
+                                     ReadVelocitySigma, UpdateFilter)
 
 # Parameter defaults (set in config/perception_params.yaml)
 VELOCITY_SETTING_DEFAULTS = {
@@ -40,6 +45,7 @@ VELOCITY_SETTING_DEFAULTS = {
     'clockOffsetWindow': 5.0,
     'robotMaxSpeed': 0.6,
     'robotMaxYawRate': 1.6,
+    'occlusionDepthSigma': 3.0,
 }
 
 # Standing still: speeds below this many sigmas are reported as 0
@@ -109,6 +115,26 @@ class VelocityTracker:
         self.leaderMeasuredSeconds = imageSeconds
         self.lastLeaderEstimate = self.ReadEstimate(self.leaderFilter)
         return self.lastLeaderEstimate
+
+    def PredictLeader(self, imageSeconds):
+        if self.leaderFilter is not None:
+            PredictFilter(self.leaderFilter, imageSeconds, self.settings.kalmanProcessNoise)
+
+    def IsInFrontOfLeader(self, measurement, robotPose):
+        if self.leaderFilter is None:
+            return False
+        predictedRange = math.hypot(self.leaderFilter.state[0] - robotPose.positionX,
+                                    self.leaderFilter.state[1] - robotPose.positionY)
+        measuredRange = math.hypot(measurement.positionX - robotPose.positionX,
+                                   measurement.positionY - robotPose.positionY)
+        rangeSigma = math.sqrt(np.linalg.eigvalsh(self.leaderFilter.covariance[:2, :2] + measurement.covariance).max())
+        return measuredRange < predictedRange - self.settings.occlusionDepthSigma * rangeSigma
+
+    def CalculateLeaderGateDistance(self, measurement):
+        if self.leaderFilter is None:
+            return math.nan
+        return CalculateGateDistance(self.leaderFilter, measurement.positionX, measurement.positionY,
+                                     measurement.covariance)
 
     def FeedFilter(self, personFilter, measurement, imageSeconds):
         if personFilter is not None:

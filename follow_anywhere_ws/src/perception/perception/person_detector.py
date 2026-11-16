@@ -5,6 +5,8 @@ To include:
 - Returns per person: tracker id, box (pixels), confidence, 17 COCO keypoints (x, y, confidence).
 - Ignore boxes smaller than detector_min_box.
 - imgsz 640 for the RealSense (its own resolution).
+- A TensorRT engine (detectorModelFile ending in .engine, made on the Orin by scripts/fetch_models.py --engine) is
+  loaded the same way; its precision and image size were fixed when it was built.
 - reset(): forget all tracks (e.g. a replayed rosbag starts over). Ultralytics ignores `persist` after
   the first call, so reset means reloading the model.
 - Set YOLO_AUTOINSTALL=False: ultralytics would otherwise pip-install packages into the environment.
@@ -27,7 +29,9 @@ REQUESTED_DEVICE = 'auto'
 
 # Detection
 PERSON_CLASS_ID = 0
+POSE_TASK = 'pose'
 HALF_PRECISION = 16
+TENSORRT_ENGINE_EXTENSION = '.engine'
 NO_CUDA_GPU_WARNING = 'no CUDA GPU found, the detector runs on the CPU which is slow'
 
 
@@ -58,8 +62,9 @@ class PersonDetector:
         self.detectorImageSize = detectorImageSize
         self.minimumBoxSizePixels = minimumBoxSizePixels
         self.inferenceDevice, self.inferenceDeviceWarning = SelectInferenceDevice(requestedDevice)
-        self.inferencePrecision = HALF_PRECISION if self.inferenceDevice.startswith('cuda') else None
-        self.model = YOLO(detectorModelPath)
+        isTensorrtEngine = detectorModelPath.endswith(TENSORRT_ENGINE_EXTENSION)
+        self.inferencePrecision = HALF_PRECISION if self.inferenceDevice.startswith('cuda') and not isTensorrtEngine else None
+        self.model = YOLO(detectorModelPath, task=POSE_TASK)
 
     def DetectAndTrackPeople(self, imageBgr):
         trackingResult = self.model.track(imageBgr, persist=True, tracker=self.trackerConfigPath,

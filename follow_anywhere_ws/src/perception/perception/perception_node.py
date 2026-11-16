@@ -11,8 +11,10 @@ To include:
   .venv site-packages at the END of sys.path so only missing packages (ultralytics, onnxruntime, torch)
   come from the venv and the system numpy / cv_bridge keep priority.
 - Two threads, so re-identification never stalls the video:
-  1. frames: newest frame -> person_detector -> coordinate_conversion -> velocity_tracker ->
-     obstacle_mapper -> publish leader + obstacles + debug_frame.
+  1. frames: newest frame -> person_detector -> coordinate_conversion -> motion gate (each person's distance to
+     the leader's Kalman prediction, for leader_manager; NaN for an overlapped person measured in front of the
+     prediction: that depth is the person in front, not a jump) -> leader_manager (OSNet on the colour image + the same
+     depth image) -> velocity_tracker -> obstacle_mapper -> publish leader + obstacles + debug_frame.
   2. leader: re-identification for leader_manager (enrol / verify / search), using the newest people;
      its result is merged into the next published leader.
   (For now the leader update runs inline in the frame callback; the second thread comes when it is needed.)
@@ -76,7 +78,7 @@ from perception.leader_manager import (ENROLL_FAILED_EVENT, ENROLLED_EVENT, ENRO
 from perception.obstacle_mapper import (OBSTACLE_SETTING_DEFAULTS, BuildPersonCircle, FindClosestPointToLine,
                                         FindClosestPointToRobot, MakeFloorPoint, MakeUnknownPoint, PersonCircle)
 from perception.person_detector import PersonDetector
-from perception.reid_model import ReidModel
+from perception.reid_model import REID_SETTING_DEFAULTS, ReidModel
 from perception.velocity_tracker import (VELOCITY_SETTING_DEFAULTS, BuildMeasurement, ClockOffsetEstimator,
                                          ConvertEstimateToBase, ConvertPointToBase, ConvertPointToOdom, MakeRobotPose,
                                          MakeStillRobotPose, VelocityTracker)
@@ -87,7 +89,7 @@ DETECTOR_IMAGE_SIZE = 640
 MINIMUM_BOX_SIZE_PIXELS = 24
 TRACKER_CONFIG_FILE = 'botsort.yaml'
 REQUESTED_DEVICE = 'auto'
-REID_MODEL_FILE = 'osnet.onnx'
+REID_MODEL_FILE = 'osnet_backbone.onnx'
 REID_THREADS = 2
 LEADER_FILE = '~/.ros/follow_anywhere/perception_leader.npz'
 
@@ -117,8 +119,8 @@ class PerceptionNode(Node):
         self.declare_parameter('reidModelFile', REID_MODEL_FILE)
         self.declare_parameter('reidThreads', REID_THREADS)
         self.declare_parameter('leaderFile', LEADER_FILE)
-        allSettingDefaults = {**LEADER_SETTING_DEFAULTS, **COORDINATE_SETTING_DEFAULTS, **OBSTACLE_SETTING_DEFAULTS,
-                              **VELOCITY_SETTING_DEFAULTS}
+        allSettingDefaults = {**LEADER_SETTING_DEFAULTS, **REID_SETTING_DEFAULTS, **COORDINATE_SETTING_DEFAULTS,
+                              **OBSTACLE_SETTING_DEFAULTS, **VELOCITY_SETTING_DEFAULTS}
         for settingName, defaultValue in allSettingDefaults.items():
             self.declare_parameter(settingName, defaultValue)
         self.detectorModelFile = self.get_parameter('detectorModelFile').value
@@ -130,6 +132,8 @@ class PerceptionNode(Node):
         self.reidThreads = self.get_parameter('reidThreads').value
         self.leaderFilePath = os.path.expanduser(self.get_parameter('leaderFile').value)
         leaderSettings = {settingName: self.get_parameter(settingName).value for settingName in LEADER_SETTING_DEFAULTS}
+        reidSettings = {settingName: self.get_parameter(settingName).value for settingName in REID_SETTING_DEFAULTS}
+        reidSettings['keypointConfidence'] = leaderSettings['keypointConfidence']
         self.coordinateSettings = SimpleNamespace(
             **{settingName: self.get_parameter(settingName).value for settingName in COORDINATE_SETTING_DEFAULTS},
             keypointConfidence=leaderSettings['keypointConfidence'])
@@ -177,12 +181,13 @@ class PerceptionNode(Node):
         self.get_logger().info(f'PersonDetector: running on {self.personDetector.inferenceDevice}')
         if self.personDetector.inferenceDeviceWarning:
             self.PublishDebugMessage('PersonDetector', self.personDetector.inferenceDeviceWarning)
-        self.reidModel = ReidModel(self.ResolveModelPath(self.reidModelFile), self.requestedDevice, self.reidThreads)
+        self.reidModel = ReidModel(self.ResolveModelPath(self.reidModelFile), self.requestedDevice, self.reidThreads,
+                                   reidSettings)
         self.get_logger().info(f'ReidModel: running on {self.reidModel.session.get_providers()[0]}')
         if self.reidModel.deviceWarning:
             self.PublishDebugMessage('ReidModel', self.reidModel.deviceWarning)
-        self.leaderManager = LeaderManager(leaderSettings)
-        if self.leaderManager.LoadLeader(self.leaderFilePath, self.reidModelFile):
+        self.leaderManager = LeaderManager(self.reidModel.CompareDescriptions, leaderSettings)
+        if self.leaderManager.LoadLeader(self.leaderFilePath, self.reidModel.modelTag):
             self.get_logger().info('LeaderManager: saved leader loaded, searching for them')
         elif os.path.exists(self.leaderFilePath):
             self.PublishDebugMessage('LeaderManager', 'saved leader is from an older version or another model, calibrate again')
@@ -209,12 +214,17 @@ class PerceptionNode(Node):
         self.latestDetectedPeople = detectedPeople
         self.latestImageSeconds = imageSeconds
         self.latestImageHeight, self.latestImageWidth = imageBgr.shape[:2]
-        leaderEvent = self.UpdateLeader(detectedPeople, imageBgr, imageSeconds)
-        self.HandleLeaderEvent(leaderEvent)
-        peoplePositions = self.PlacePeople(detectedPeople, imageSeconds)
+        depthImageMessage = self.FindDepthImage(imageSeconds)
+        depthMeters = self.ConvertDepth(depthImageMessage)
+        peoplePositions = self.PlacePeople(detectedPeople, depthImageMessage, depthMeters)
         self.robotPose = self.FindRobotPose(imageSeconds)
-        peopleEstimates, peopleCircles, leaderEstimate, leaderCircle = self.TrackPeopleMotion(peoplePositions,
-                                                                                               imageSeconds)
+        peopleMeasurements, measuredRadii = self.MeasurePeople(peoplePositions)
+        gateDistances = self.CalculateGateDistances(detectedPeople, peopleMeasurements, imageSeconds)
+        leaderEvent = self.UpdateLeader(detectedPeople, imageBgr, depthMeters, peoplePositions, gateDistances,
+                                        imageSeconds)
+        self.HandleLeaderEvent(leaderEvent)
+        peopleEstimates, peopleCircles, leaderEstimate, leaderCircle = self.TrackPeopleMotion(
+            detectedPeople, peopleMeasurements, measuredRadii, imageSeconds)
         leaderPosition = peoplePositions.get(self.leaderManager.visibleLeaderTrackId)
         leaderClosestPoint = None
         if leaderCircle is not None:
@@ -225,8 +235,8 @@ class PerceptionNode(Node):
         self.obstaclesPublisher.publish(
             self.BuildObstaclesMessage(detectedPeople, peopleEstimates, peopleCircles, leaderClosestPoint, header))
         self.debugFramePublisher.publish(self.BuildDebugFrameMessage(
-            detectedPeople, peoplePositions, peopleEstimates, leaderPosition, detectorTimeMilliseconds, frameStartSeconds,
-            imageSeconds, header))
+            detectedPeople, peoplePositions, peopleEstimates, gateDistances, leaderPosition, detectorTimeMilliseconds,
+            frameStartSeconds, imageSeconds, header))
 
     def HandleDepthImage(self, depthImageMessage):
         self.depthImagesByStamp[ConvertStampToSeconds(depthImageMessage.header.stamp)] = depthImageMessage
@@ -283,24 +293,32 @@ class PerceptionNode(Node):
         response.message = 'leader cleared'
         return response
 
-    def UpdateLeader(self, detectedPeople, imageBgr, imageSeconds):
+    def UpdateLeader(self, detectedPeople, imageBgr, depthMeters, peoplePositions, gateDistances, imageSeconds):
         self.reidSecondsInFrame = 0.0
         self.reidCropCountInFrame = 0
+        if depthMeters is not None and depthMeters.shape != imageBgr.shape[:2]:
+            self.PublishDebugMessage('ReidModel', 'depth image size differs from the colour image, depth mask skipped')
+            depthMeters = None
         try:
             return self.leaderManager.Update(
-                detectedPeople, lambda trackIds: self.EmbedTrackedPeople(imageBgr, detectedPeople, trackIds),
-                imageSeconds, imageBgr.shape[1])
+                detectedPeople,
+                lambda trackIds: self.DescribeTrackedPeople(imageBgr, depthMeters, detectedPeople, peoplePositions,
+                                                            trackIds),
+                gateDistances, imageSeconds, imageBgr.shape[1])
         except Exception as error:
             self.PublishDebugMessage('LeaderManager', f'update failed: {error}')
             return NO_EVENT
 
-    def EmbedTrackedPeople(self, imageBgr, detectedPeople, trackIds):
-        embedStartSeconds = time.perf_counter()
+    def DescribeTrackedPeople(self, imageBgr, depthMeters, detectedPeople, peoplePositions, trackIds):
+        describeStartSeconds = time.perf_counter()
         peopleByTrackId = {person.trackId: person for person in detectedPeople}
-        embeddings = self.reidModel.EmbedPeople(imageBgr, [peopleByTrackId[trackId] for trackId in trackIds])
-        self.reidSecondsInFrame += time.perf_counter() - embedStartSeconds
+        torsoDepths = [peoplePositions[trackId].cameraDepth if trackId in peoplePositions else None
+                       for trackId in trackIds]
+        descriptions = self.reidModel.DescribePeople(imageBgr, depthMeters,
+                                                     [peopleByTrackId[trackId] for trackId in trackIds], torsoDepths)
+        self.reidSecondsInFrame += time.perf_counter() - describeStartSeconds
         self.reidCropCountInFrame += len(trackIds)
-        return embeddings
+        return descriptions
 
     def HandleLeaderEvent(self, leaderEvent):
         if leaderEvent == NO_EVENT:
@@ -310,16 +328,26 @@ class PerceptionNode(Node):
             self.PublishDebugMessage('LeaderManager', f'enrolment failed: {self.leaderManager.eventReason}')
         if leaderEvent == ENROLLED_EVENT:
             try:
-                self.leaderManager.SaveLeader(self.leaderFilePath, self.reidModelFile)
+                self.leaderManager.SaveLeader(self.leaderFilePath, self.reidModel.modelTag)
             except OSError as error:
                 self.PublishDebugMessage('LeaderManager', f'could not save the leader: {error}')
 
-    def PlacePeople(self, detectedPeople, imageSeconds):
+    def ConvertDepth(self, depthImageMessage):
+        if depthImageMessage is None:
+            return None
+        try:
+            return ConvertDepthImage(depthImageMessage, self.imageBridge)
+        except Exception as error:
+            self.PublishDebugMessage('CoordinateConversion', f'depth image conversion failed: {error}')
+            return None
+
+    def PlacePeople(self, detectedPeople, depthImageMessage, depthMeters):
         if not detectedPeople:
             return {}
-        depthImageMessage = self.FindDepthImage(imageSeconds)
         if depthImageMessage is None:
             self.PublishDebugMessage('CoordinateConversion', 'no depth image with the colour stamp, positions invalid')
+            return {}
+        if depthMeters is None:
             return {}
         if self.cameraModel is None:
             self.PublishDebugMessage('CoordinateConversion', 'no camera_info yet, positions invalid')
@@ -333,7 +361,6 @@ class PerceptionNode(Node):
         cameraTranslation = opticalToBaseTransform.transform.translation
         self.cameraPosition = Point(x=cameraTranslation.x, y=cameraTranslation.y, z=cameraTranslation.z)
         try:
-            depthMeters = ConvertDepthImage(depthImageMessage, self.imageBridge)
             peoplePositions = {}
             for person in detectedPeople:
                 personPosition = PlacePerson(person, depthMeters, self.cameraModel, opticalToBaseTransform,
@@ -379,7 +406,7 @@ class PerceptionNode(Node):
             self.lastKnownLeaderPoint = MakeFloorPoint(*ConvertPointToOdom(newRobotPose, lastKnownPoint.x,
                                                                            lastKnownPoint.y))
 
-    def TrackPeopleMotion(self, peoplePositions, imageSeconds):
+    def MeasurePeople(self, peoplePositions):
         peopleMeasurements = {}
         measuredRadii = {}
         for trackId, personPosition in peoplePositions.items():
@@ -387,6 +414,23 @@ class PerceptionNode(Node):
             measuredRadii[trackId] = measuredCircle.radius
             peopleMeasurements[trackId] = BuildMeasurement(measuredCircle, personPosition.uncertainty, self.robotPose,
                                                            self.velocitySettings)
+        return peopleMeasurements, measuredRadii
+
+    def CalculateGateDistances(self, detectedPeople, peopleMeasurements, imageSeconds):
+        self.velocityTracker.PredictLeader(imageSeconds)
+        gateDistances = {}
+        for person in detectedPeople:
+            measurement = peopleMeasurements.get(person.trackId)
+            if measurement is None:
+                continue
+            if self.leaderManager.IsOverlapped(person, detectedPeople) and self.velocityTracker.IsInFrontOfLeader(
+                    measurement, self.robotPose):
+                gateDistances[person.trackId] = math.nan
+                continue
+            gateDistances[person.trackId] = self.velocityTracker.CalculateLeaderGateDistance(measurement)
+        return gateDistances
+
+    def TrackPeopleMotion(self, detectedPeople, peopleMeasurements, measuredRadii, imageSeconds):
         peopleEstimates = {}
         peopleCircles = {}
         for trackId, motionEstimate in self.velocityTracker.UpdatePeople(peopleMeasurements, imageSeconds).items():
@@ -394,15 +438,26 @@ class PerceptionNode(Node):
             peopleCircles[trackId] = PersonCircle(peopleEstimates[trackId].positionX,
                                                   peopleEstimates[trackId].positionY, measuredRadii[trackId])
         leaderTrackId = self.leaderManager.visibleLeaderTrackId
-        leaderEstimate = self.velocityTracker.UpdateLeader(peopleMeasurements.get(leaderTrackId), imageSeconds,
-                                                           self.graceTime)
+        leaderMeasurement = self.FindLeaderMeasurement(detectedPeople, peopleMeasurements, leaderTrackId)
+        leaderEstimate = self.velocityTracker.UpdateLeader(leaderMeasurement, imageSeconds, self.graceTime)
         if leaderEstimate is None:
             return peopleEstimates, peopleCircles, None, None
         leaderEstimate = ConvertEstimateToBase(self.robotPose, leaderEstimate)
         leaderCircle = None
-        if leaderTrackId in peopleMeasurements:
+        if leaderMeasurement is not None:
             leaderCircle = PersonCircle(leaderEstimate.positionX, leaderEstimate.positionY, measuredRadii[leaderTrackId])
         return peopleEstimates, peopleCircles, leaderEstimate, leaderCircle
+
+    def FindLeaderMeasurement(self, detectedPeople, peopleMeasurements, leaderTrackId):
+        leaderMeasurement = peopleMeasurements.get(leaderTrackId)
+        leaderPerson = next((person for person in detectedPeople if person.trackId == leaderTrackId), None)
+        if leaderMeasurement is None or leaderPerson is None:
+            return None
+        if self.leaderManager.IsOverlapped(leaderPerson, detectedPeople) and self.velocityTracker.IsInFrontOfLeader(
+                leaderMeasurement, self.robotPose):
+            self.PublishDebugMessage('VelocityTracker', 'leader depth hits the person in front, position skipped')
+            return None
+        return leaderMeasurement
 
     def RememberLeaderPosition(self, leaderPosition, leaderClosestPoint):
         self.lastLeaderPosition = leaderPosition.position
@@ -468,7 +523,7 @@ class PerceptionNode(Node):
             obstaclesMessage.obstacles.append(obstacle)
         return obstaclesMessage
 
-    def BuildDebugFrameMessage(self, detectedPeople, peoplePositions, peopleEstimates, leaderPosition,
+    def BuildDebugFrameMessage(self, detectedPeople, peoplePositions, peopleEstimates, gateDistances, leaderPosition,
                                detectorTimeMilliseconds, frameStartSeconds, imageSeconds, header):
         debugFrameMessage = PerceptionDebugFrame()
         debugFrameMessage.header = header
@@ -495,6 +550,7 @@ class PerceptionNode(Node):
         debugFrameMessage.reid_time_ms = self.reidSecondsInFrame * 1000.0
         debugFrameMessage.reid_crop_count = self.reidCropCountInFrame
         debugFrameMessage.people_count = len(detectedPeople)
+        debugFrameMessage.reid_margin = self.leaderManager.reidMargin
         debugFrameMessage.frame_time_ms = (time.perf_counter() - frameStartSeconds) * 1000.0
         for detectedPerson in detectedPeople:
             debugPerson = PerceptionDebugPerson()
@@ -506,6 +562,8 @@ class PerceptionNode(Node):
             debugPerson.y_max = detectedPerson.bottom
             debugPerson.is_leader = detectedPerson.trackId == self.leaderManager.visibleLeaderTrackId
             debugPerson.reid_distance = self.leaderManager.GetRecentDistance(detectedPerson.trackId, imageSeconds)
+            debugPerson.reid_shared_area = self.leaderManager.GetRecentSharedArea(detectedPerson.trackId, imageSeconds)
+            debugPerson.motion_gate_distance = gateDistances.get(detectedPerson.trackId, math.nan)
             personPosition = peoplePositions.get(detectedPerson.trackId)
             debugPerson.position_valid = personPosition is not None
             if personPosition is not None:

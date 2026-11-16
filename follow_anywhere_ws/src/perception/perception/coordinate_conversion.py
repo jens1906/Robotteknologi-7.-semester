@@ -54,6 +54,7 @@ class PersonPosition:
     width: float
     height: float
     uncertainty: float
+    cameraDepth: float
 
 
 def ConvertDepthImage(depthImageMessage, imageBridge):
@@ -81,7 +82,7 @@ def PlacePerson(person, depthMeters, cameraModel, opticalToBaseTransform, settin
     basePoint = do_transform_point(opticalPoint, opticalToBaseTransform)
     width = (person.right - person.left) * depth / cameraModel.fx()
     height = (person.bottom - person.top) * depth / cameraModel.fy()
-    return PersonPosition(basePoint.point, width, height, spread)
+    return PersonPosition(basePoint.point, width, height, spread, depth)
 
 
 def MeasurePersonDepth(person, depthMeters, settings):
