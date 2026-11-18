@@ -116,3 +116,11 @@ camera_calibration:
     searchPitchRange: 0.79                   # CHOSEN: rad (45 deg), tilts tried around the saved pitch before ICP (first Jetson runs: the saved tilt was ~40 deg off)
     searchYawRange: 0.26                     # GUESS: rad (15 deg), same for the yaw
     searchStep: 0.087                        # GUESS: rad (5 deg) between tries; ICP converges from within ~10 deg
+
+evaluation_node:
+  ros__parameters:
+    metricsRate: 5.0
+    desiredDistance: 1.5
+    nearCollisionDistance: 0.3
+    switchJumpDistance: 1.5
+    rateWindow: 1.0

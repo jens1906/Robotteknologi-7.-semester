@@ -13,6 +13,8 @@ const panels = new Map();         // topic -> Panel
 const views = new Set();
 let savedOpen = JSON.parse(localStorage.getItem(STORE) || 'null');
 let recording = { state: 'idle', since: 0, name: '', error: '' };
+let markCounts = { collision: 0, wrong_leader: 0 };
+let markNotice = { text: '', until: 0 };
 
 // ------------------------------------------------------------- connection
 
@@ -45,6 +47,7 @@ function setStatus(ok) {
   s.textContent = ok ? 'connected' : 'disconnected';
   s.className = ok ? 'ok' : 'bad';
   $('#record-button').disabled = !ok;
+  updateMarkButtons();
 }
 
 function onText(m) {
@@ -73,22 +76,69 @@ function onText(m) {
       break;
     case 'result': for (const v of views) v.HandleServiceResult(m); break;
     case 'recording': onRecording(m); break;
+    case 'mark_result':
+      markNotice = { text: m.message, until: performance.now() + 3000 };
+      updateRecordInfo();
+      break;
   }
 }
 
 $('#record-button').onclick = () => {
-  if (recording.state === 'idle') send({ op: 'record_start' });
-  else if (recording.state === 'recording') send({ op: 'record_stop', title: $('#bag-title').value });
+  if (recording.state === 'idle' && send({ op: 'record_start' })) markCounts = { collision: 0, wrong_leader: 0 };
+  else if (recording.state === 'recording') openStopForm();
 };
 
+function markEvent(eventType) {
+  if (!send({ op: 'mark_event', event_type: eventType })) return;
+  markCounts[eventType] += 1;
+  updateMarkButtons();
+}
+$('#mark-collision').onclick = () => markEvent('collision');
+$('#mark-wrong-leader').onclick = () => markEvent('wrong_leader');
+
+function updateMarkButtons() {
+  const off = !ws || ws.readyState !== WebSocket.OPEN || recording.state !== 'recording';
+  const label = (text, n) => (n ? `${text} (${n})` : text);
+  $('#mark-collision').disabled = off;
+  $('#mark-wrong-leader').disabled = off;
+  $('#mark-collision').textContent = label('Collision', markCounts.collision);
+  $('#mark-wrong-leader').textContent = label('Wrong leader', markCounts.wrong_leader);
+}
+
+function openStopForm() {
+  const f = $('#stop-form');
+  f.collision.value = markCounts.collision ? '1' : '0';
+  f.wrong_leader.value = markCounts.wrong_leader ? '1' : '0';
+  f.leader_in_sight.value = '-1';
+  f.notes.value = '';
+  f.hidden = false;
+  f.notes.focus();
+}
+
+$('#stop-form').onsubmit = (ev) => {
+  ev.preventDefault();
+  const f = $('#stop-form');
+  if (recording.state !== 'recording') return;
+  send({
+    op: 'record_stop', title: $('#bag-title').value, collision: Number(f.collision.value),
+    wrong_leader: Number(f.wrong_leader.value), leader_in_sight: Number(f.leader_in_sight.value), notes: f.notes.value,
+  });
+  f.hidden = true;
+};
+$('#stop-cancel').onclick = () => { $('#stop-form').hidden = true; };
+
 function onRecording(m) {
-  if (recording.state === 'saving' && m.state === 'idle' && !m.error) $('#bag-title').value = '';
+  if (recording.state !== 'idle' && recording.state !== 'recording' && m.state === 'idle' && !m.error) {
+    $('#bag-title').value = '';
+  }
   recording = { state: m.state, since: performance.now() - m.elapsed * 1000, name: m.name, error: m.error };
   const b = $('#record-button');
   b.textContent = m.state === 'idle' ? '▶' : '⏸';
   b.title = m.state === 'idle' ? 'Start recording a bag' : 'Stop and save the bag';
   b.className = m.state === 'idle' ? '' : 'active';
-  b.disabled = m.state === 'saving';
+  b.disabled = m.state !== 'idle' && m.state !== 'recording';
+  if (m.state !== 'recording') $('#stop-form').hidden = true;
+  updateMarkButtons();
   updateRecordInfo();
 }
 
@@ -102,7 +152,8 @@ function updateRecordInfo() {
   }
   const seconds = Math.floor((performance.now() - recording.since) / 1000);
   const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-  info.textContent = recording.state === 'saving' ? `saving… ${time}` : `● rec ${time}`;
+  info.textContent = recording.state === 'recording' ? `● rec ${time}` : `saving… ${time}`;
+  if (recording.state === 'recording' && performance.now() < markNotice.until) info.textContent += ` · ${markNotice.text}`;
   info.title = recording.name;
 }
 setInterval(updateRecordInfo, 500);

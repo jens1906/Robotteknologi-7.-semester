@@ -23,6 +23,7 @@
   <depend>image_geometry</depend>
   <depend>sensor_msgs_py</depend>
   <depend>follow_anywhere_interfaces</depend>
+  <depend>unitree_api</depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

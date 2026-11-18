@@ -19,6 +19,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PerceptionObstacle.msg"
   "msg/PerceptionObstacleArray.msg"
   "srv/PerceptionCalibrateLeader.srv"
+  # evaluation
+  "msg/EvaluationMetrics.msg"
+  "srv/EvaluationFinishRun.srv"
+  "srv/EvaluationMarkEvent.srv"
   # navigation: add here
   DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
 )

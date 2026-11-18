@@ -18,8 +18,20 @@
   </aside>
   <div id="recorder">
     <span id="record-info"></span>
+    <button id="mark-collision" class="mark" type="button" title="Mark a collision now (evaluation report)" disabled>Collision</button>
+    <button id="mark-wrong-leader" class="mark" type="button" title="Mark that the robot follows the wrong person now (evaluation report)" disabled>Wrong leader</button>
     <input id="bag-title" type="text" placeholder="Bag title…" autocomplete="off" title="Name given to the bag when it is stopped, as <title>_MMDD_HHMM">
     <button id="record-button" type="button" title="Start recording a bag" disabled>▶</button>
+    <form id="stop-form" hidden>
+      <label>Collision <select name="collision"><option value="-1">not answered</option><option value="0">no</option><option value="1">yes</option></select></label>
+      <label>Wrong leader <select name="wrong_leader"><option value="-1">not answered</option><option value="0">no</option><option value="1">yes</option></select></label>
+      <label>Leader in sight at end <select name="leader_in_sight"><option value="-1">auto (perception)</option><option value="0">no</option><option value="1">yes</option></select></label>
+      <input name="notes" type="text" placeholder="Notes…" autocomplete="off">
+      <div class="actions">
+        <button id="stop-cancel" type="button">Keep recording</button>
+        <button type="submit">Stop and save</button>
+      </div>
+    </form>
   </div>
   <main id="panels">
     <p id="empty">Click a topic on the left to open it, or open the perception view. Images and point clouds are drawn, everything else is shown as JSON.</p>

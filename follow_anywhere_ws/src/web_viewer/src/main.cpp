@@ -8,7 +8,10 @@
 //                    "pair":"/y" (images) only send the image whose header
 //                                stamp equals a message on /y, "" = unpair
 //   {"op":"calibrate","track_id":7}   {"op":"clear_leader"}
-//   {"op":"record_start"}   {"op":"record_stop","title":"first_follow"}
+//   {"op":"record_start"}   {"op":"record_stop","title":"first_follow",
+//     "collision":-1,"wrong_leader":0,"leader_in_sight":1,"notes":"..."}
+//     (answers for the evaluation report: -1 = not answered, 0 = no, 1 = yes)
+//   {"op":"mark_event","event_type":"collision|wrong_leader","note":"..."}
 // Server -> browser:
 //   text   {"op":"hello","defaults":[...]}
 //   text   {"op":"topics","topics":[["/x","pkg/msg/T"],...]}
@@ -16,7 +19,8 @@
 //   text   {"op":"msg","topic":"/x","data":{...}}           (kind json)
 //   text   {"op":"error","topic":"/x","error":"..."}
 //   text   {"op":"result","success":true,"message":"..."}   (calibrate, clear_leader)
-//   text   {"op":"recording","state":"idle|recording|saving","name":"...","elapsed":s,"error":"..."}
+//   text   {"op":"mark_result","success":true,"message":"..."}   (mark_event)
+//   text   {"op":"recording","state":"idle|recording|finishing|saving","name":"...","elapsed":s,"error":"..."}
 //   binary [u8 kind][u8 0][u16le topic_len][topic][pad to 4][payload]
 //          kind 1 = JPEG, 2 = PNG, 3 = float32 x,y,z,intensity points
 //          kind 1 and 2 start the payload with [u32 sec][u32 nanosec] of the
@@ -30,6 +34,7 @@
 #include <ctime>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -42,6 +47,8 @@
 #include <unistd.h>
 
 #include <ament_index_cpp/get_package_share_path.hpp>
+#include <follow_anywhere_interfaces/srv/evaluation_finish_run.hpp>
+#include <follow_anywhere_interfaces/srv/evaluation_mark_event.hpp>
 #include <follow_anywhere_interfaces/srv/perception_calibrate_leader.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -64,6 +71,7 @@ namespace
 {
 
 constexpr auto RECORDER_STOP_TIMEOUT = 15s;
+constexpr auto EVALUATION_FINISH_TIMEOUT = 3s;
 
 // Reads a string or number field from the flat JSON objects the browser sends.
 std::string json_field(const std::string & js, const std::string & key)
@@ -159,6 +167,19 @@ std::string clean_title(std::string title)
   return title.empty() ? "bag" : title;
 }
 
+int8_t answer_field(const std::string & js, const std::string & key)
+{
+  auto v = json_field(js, key);
+  return v.empty() ? -1 : static_cast<int8_t>(std::strtol(v.c_str(), nullptr, 10));
+}
+
+bool write_text_file(const std::filesystem::path & path, const std::string & content)
+{
+  std::ofstream file(path);
+  file << content;
+  return static_cast<bool>(file);
+}
+
 std::filesystem::path free_path(const std::filesystem::path & dir, const std::string & name)
 {
   auto path = dir / name;
@@ -210,6 +231,11 @@ public:
     calibrate_client_ = create_client<follow_anywhere_interfaces::srv::PerceptionCalibrateLeader>(
       "/perception/calibrate_leader");
     clear_client_ = create_client<std_srvs::srv::Trigger>("/perception/clear_leader");
+    start_run_client_ = create_client<std_srvs::srv::Trigger>("/evaluation/start_run");
+    finish_run_client_ = create_client<follow_anywhere_interfaces::srv::EvaluationFinishRun>(
+      "/evaluation/finish_run");
+    mark_event_client_ = create_client<follow_anywhere_interfaces::srv::EvaluationMarkEvent>(
+      "/evaluation/mark_event");
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
     // Output topics
@@ -227,7 +253,7 @@ public:
   {
     {
       std::lock_guard<std::mutex> lk(record_mtx_);
-      if (record_state_ == "recording") {signal_recorder_stop();}
+      if (record_state_ == "recording" || record_state_ == "finishing") {signal_recorder_stop();}
     }
     if (recorder_thread_.joinable()) {recorder_thread_.join();}
     server_->stop();
@@ -298,7 +324,16 @@ private:
       return;
     }
     if (op == "record_stop") {
-      stop_recording(json_field(msg, "title"));
+      auto req = std::make_shared<follow_anywhere_interfaces::srv::EvaluationFinishRun::Request>();
+      req->collision = answer_field(msg, "collision");
+      req->wrong_leader = answer_field(msg, "wrong_leader");
+      req->leader_in_sight_at_end = answer_field(msg, "leader_in_sight");
+      req->notes = json_field(msg, "notes");
+      stop_recording(json_field(msg, "title"), req);
+      return;
+    }
+    if (op == "mark_event") {
+      mark_event(s, json_field(msg, "event_type"), json_field(msg, "note"));
       return;
     }
     auto topic = json_field(msg, "topic");
@@ -360,9 +395,26 @@ private:
       });
   }
 
-  void send_result(const SessionPtr & s, bool success, const std::string & message)
+  void mark_event(const SessionPtr & s, const std::string & event_type, const std::string & note)
   {
-    std::string m = "{\"op\":\"result\",\"success\":";
+    using Srv = follow_anywhere_interfaces::srv::EvaluationMarkEvent;
+    if (!mark_event_client_->service_is_ready()) {
+      send_result(s, false, "/evaluation/mark_event is not available", "mark_result");
+      return;
+    }
+    auto req = std::make_shared<Srv::Request>();
+    req->event_type = event_type;
+    req->note = note;
+    std::weak_ptr<WsSession> weak = s;
+    mark_event_client_->async_send_request(req, [this, weak](rclcpp::Client<Srv>::SharedFuture f) {
+        if (auto sp = weak.lock()) {send_result(sp, f.get()->success, f.get()->message, "mark_result");}
+      });
+  }
+
+  void send_result(
+    const SessionPtr & s, bool success, const std::string & message, const std::string & op = "result")
+  {
+    std::string m = "{\"op\":\"" + op + "\",\"success\":";
     m += success ? "true" : "false";
     m += ",\"message\":";
     json_escape(m, message);
@@ -420,17 +472,57 @@ private:
         RCLCPP_INFO(get_logger(), "recording bag to %s", path.c_str());
       }
     }
-    if (!error.empty()) {report_record_error(error);}
+    if (!error.empty()) {
+      report_error("BagRecorder", error);
+    } else {
+      start_evaluation_run();
+    }
     broadcast(recording_state());
   }
 
-  void stop_recording(const std::string & title)
+  void start_evaluation_run()
   {
+    if (!start_run_client_->service_is_ready()) {
+      report_error("EvaluationReport", "/evaluation/start_run not available, bag recorded without a report");
+      return;
+    }
+    start_run_client_->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
+  }
+
+  void stop_recording(
+    const std::string & title,
+    const follow_anywhere_interfaces::srv::EvaluationFinishRun::Request::SharedPtr & answers)
+  {
+    using Srv = follow_anywhere_interfaces::srv::EvaluationFinishRun;
+    bool evaluation_ready = finish_run_client_->service_is_ready();
     {
       std::lock_guard<std::mutex> lk(record_mtx_);
       if (record_state_ != "recording") {return;}
       record_title_ = clean_title(title);
-      signal_recorder_stop();
+      report_json_.clear();
+      report_markdown_.clear();
+      if (evaluation_ready) {
+        record_state_ = "finishing";
+        record_stop_ = std::chrono::steady_clock::now();
+      } else {
+        signal_recorder_stop();
+      }
+    }
+    if (evaluation_ready) {
+      finish_run_client_->async_send_request(answers, [this](rclcpp::Client<Srv>::SharedFuture f) {
+          {
+            std::lock_guard<std::mutex> lk(record_mtx_);
+            if (record_state_ != "finishing") {return;}
+            if (f.get()->success) {
+              report_json_ = f.get()->report_json;
+              report_markdown_ = f.get()->report_markdown;
+            }
+            signal_recorder_stop();
+          }
+          broadcast(recording_state());
+        });
+    } else {
+      report_error("EvaluationReport", "/evaluation/finish_run not available, bag saved without a report");
     }
     broadcast(recording_state());
   }
@@ -449,12 +541,22 @@ private:
     bool killed = false;
     while (waitpid(pid, &status, WNOHANG) == 0) {
       std::this_thread::sleep_for(100ms);
-      std::lock_guard<std::mutex> lk(record_mtx_);
-      if (record_state_ == "saving" &&
-        std::chrono::steady_clock::now() - record_stop_ > RECORDER_STOP_TIMEOUT)
+      bool finish_timed_out = false;
       {
-        kill(-pid, SIGKILL);
-        killed = true;
+        std::lock_guard<std::mutex> lk(record_mtx_);
+        auto waited = std::chrono::steady_clock::now() - record_stop_;
+        if (record_state_ == "finishing" && waited > EVALUATION_FINISH_TIMEOUT) {
+          signal_recorder_stop();
+          finish_timed_out = true;
+        } else if (record_state_ == "saving" && waited > RECORDER_STOP_TIMEOUT) {
+          kill(-pid, SIGKILL);
+          killed = true;
+        }
+      }
+      if (finish_timed_out) {
+        report_error("EvaluationReport", "/evaluation/finish_run did not answer within " +
+          std::to_string(EVALUATION_FINISH_TIMEOUT.count()) + " s, bag saved without a report");
+        broadcast(recording_state());
       }
     }
     std::string error;
@@ -480,20 +582,26 @@ private:
           record_name_ = target.filename().string();
         }
       }
+      auto bag_folder = std::filesystem::path(bag_directory_) / record_name_;
+      if (!report_json_.empty() && std::filesystem::exists(bag_folder)) {
+        bool written = write_text_file(bag_folder / "evaluation_report.json", report_json_) &&
+          write_text_file(bag_folder / "evaluation_report.md", report_markdown_);
+        if (!written && error.empty()) {error = "cannot write the evaluation report into " + record_name_;}
+      }
       record_state_ = "idle";
       record_error_ = error;
       recorder_pid_ = -1;
       if (error.empty()) {RCLCPP_INFO(get_logger(), "saved bag %s", record_name_.c_str());}
     }
-    if (!error.empty()) {report_record_error(error);}
+    if (!error.empty()) {report_error("BagRecorder", error);}
     broadcast(recording_state());
   }
 
-  void report_record_error(const std::string & error)
+  void report_error(const std::string & area, const std::string & error)
   {
-    RCLCPP_ERROR(get_logger(), "%s", error.c_str());
+    RCLCPP_ERROR(get_logger(), "%s: %s", area.c_str(), error.c_str());
     std_msgs::msg::String m;
-    m.data = "BagRecorder: " + error;
+    m.data = area + ": " + error;
     if (rclcpp::ok()) {debug_pub_->publish(m);}
   }
 
@@ -774,12 +882,16 @@ private:
   rclcpp::Client<follow_anywhere_interfaces::srv::PerceptionCalibrateLeader>::SharedPtr
     calibrate_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr clear_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr start_run_client_;
+  rclcpp::Client<follow_anywhere_interfaces::srv::EvaluationFinishRun>::SharedPtr finish_run_client_;
+  rclcpp::Client<follow_anywhere_interfaces::srv::EvaluationMarkEvent>::SharedPtr mark_event_client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr debug_pub_;
 
   std::string bag_directory_, exclude_regex_;
   std::mutex record_mtx_;
   std::string record_state_ = "idle";
   std::string record_name_, record_title_, record_stamp_, record_error_;
+  std::string report_json_, report_markdown_;
   std::filesystem::path record_path_;
   std::chrono::steady_clock::time_point record_start_, record_stop_;
   pid_t recorder_pid_ = -1;

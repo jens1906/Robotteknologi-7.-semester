@@ -1,0 +1,10 @@
+# End the evaluation run and get its report. Called by the web viewer when a recording stops.
+# Answers: -1 = not answered, 0 = no, 1 = yes.
+int8 collision
+int8 wrong_leader
+int8 leader_in_sight_at_end
+string notes
+---
+bool success                               # false: no run was started
+string report_json
+string report_markdown

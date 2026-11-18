@@ -1,0 +1,6 @@
+# Mark a manual event in the running evaluation (web viewer buttons).
+string event_type                          # 'collision' or 'wrong_leader'
+string note
+---
+bool success                               # false: no run active or unknown event type
+string message
