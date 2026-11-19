@@ -1,0 +1,29 @@
+# Search: straight corridor, the leader keeps going (spec scenario 1, baseline intercept).
+# A cart crosses the corridor between the Go2 and the leader and hides the leader for a
+# few seconds; the leader keeps walking straight, so the search should reacquire it ahead.
+#
+#  y=1.5  +----------------------- -- ------------------------+
+#  Go2 >  |   leader ->            cart                       |
+#  y=-1.5 +----------------------- -- ------------------------+
+#        x=-2                     12  13                      40
+
+static:
+  - {type: wall, name: corridor_north_1, from: [-2, 1.5], to: [11.4, 1.5], height: 2.5}
+  - {type: wall, name: corridor_north_2, from: [13.6, 1.5], to: [40, 1.5], height: 2.5}
+  - {type: wall, name: corridor_south_1, from: [-2, -1.5], to: [11.4, -1.5], height: 2.5}
+  - {type: wall, name: corridor_south_2, from: [13.6, -1.5], to: [40, -1.5], height: 2.5}
+  - {type: wall, name: corridor_west, from: [-2, -1.5], to: [-2, 1.5], height: 2.5}
+  - {type: wall, name: corridor_east, from: [40, -1.5], to: [40, 1.5], height: 2.5}
+
+movers:
+  # A tall cart through the side openings at x = 12.5, across the corridor and back. It
+  # crosses just after the leader passes x = 12.5 (t ~ 40 s), between it and the Go2.
+  - {name: cart, type: box, size: [0.8, 1.2, 1.8], path: [[12.5, -4], [12.5, 4]], speed: 0.6,
+     start_delay: 36, color: [0.9, 0.6, 0.1]}
+
+people:
+  - name: leader
+    path: [[1.5, 0], [36, 0]]
+    mode: once
+    speed: 0.45
+    start_delay: 15

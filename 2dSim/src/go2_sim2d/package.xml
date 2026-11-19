@@ -20,6 +20,7 @@
   <depend>unitree_api</depend>
   <depend>unitree_go</depend>
   <depend>follow_anywhere_interfaces</depend>
+  <depend>visualization_msgs</depend>
   <depend>go2_scenarios</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

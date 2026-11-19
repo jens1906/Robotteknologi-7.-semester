@@ -1,0 +1,47 @@
+# Lost-leader search (docs/leader_search_spec.md). Defaults are starting values to tune in sim.
+leader_search:
+  ros__parameters:
+    rate_hz: 10.0          # search tick rate, dt = 1 / rate_hz
+    window_radius: 15.0    # [m] round search window around the robot (0 = square window_cells)
+    window_cells: 20       # W of the square window, used when window_radius is 0
+    resolution: 0.5        # r, cell size [m]
+    t_grace: 0.3           # [s] without a re-ID match before SEARCH
+    s_min: 0.3             # [m/s] leader speed clamp
+    s_max: 2.0
+    v_stop: 0.15           # [m/s] below: treated as stopped at loss
+    sigma_theta0: 0.3      # [rad] initial heading spread
+    sigma_h: 0.6           # [rad/sqrt(s)] heading diffusion rate
+    stopped_enabled: true
+    p_stop0: 0.1           # initial stopped mass
+    lambda_stop: 0.2       # [1/s] moving -> stopped
+    lambda_go: 0.5         # [1/s] stopped -> moving
+    blocked_mode: DROP     # DROP or REDIRECT
+    occ_memory: true       # unscanned cells keep their last lidar state (blind sectors)
+    cam_fov: 1.52          # [rad] D455 horizontal FOV (87 deg)
+    cam_range: 6.0         # [m] re-ID range, placeholder until calibrated
+    cam_yaw: 0.0           # [rad] camera mount yaw
+    p_d: [0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]  # per 1 m bin, placeholder
+    rho: 1.0               # [m] target hysteresis radius
+    delta_log: 0.69        # target hysteresis margin (log 2)
+    K_f: 30                # intercept horizon [ticks]
+    t_margin: 0.5          # [s] intercept slack
+    v_full: 0.5            # [m/s] MPC speed_limit[0]
+    v_part: 0.2            # [m/s] MPC speed_limit[1]
+    omega_max: 0.5         # [rad/s] MPC speed_limit[3]
+    sector_full: 1.4       # [rad] MPC sector edges
+    sector_part: 2.3
+    inflate_cells: 0       # planner obstacle inflation
+    wall_cost: 1.0         # [m] planner: extra cost of a cell next to a wall (soft clearance)
+    path_spacing: 0.1      # [m] output path resampling
+    tail_cut: 1.0e-6       # belief below this is 0: passes skip empty cells (0 = exact)
+    standoff: 1.0          # [m] search path stops this far before the intercept
+    t_max: 20.0            # [s] give-up thresholds
+    p_min: 0.01
+    p_out_max: 0.5
+    giveup_reach: 0.3      # [m] at the last-seen point: rotate in place
+
+    # ROS node only
+    leader_topic: /perception/leader
+    scan_topic: /perception/scan
+    odom_topic: /utlidar/robot_odom
+    belief_rate_hz: 2.0

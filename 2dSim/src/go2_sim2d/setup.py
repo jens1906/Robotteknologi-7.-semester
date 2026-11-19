@@ -31,6 +31,8 @@ setup(
             'sim2d = go2_sim2d.sim_node:main',
             'fake_perception = go2_sim2d.fake_perception:main',
             'viewer = go2_sim2d.viewer:main',
+            'search_eval = go2_sim2d.search_eval:main',
+            'search_batch = go2_sim2d.search_batch:main',
         ],
     },
 )

@@ -10,7 +10,8 @@ Paths are lists of [x, y] in the world frame. The Go2 spawns at the origin
 facing +x, so the world frame is also the robot's odom frame.
 Path options: speed (m/s), mode ("loop", the default for people: walk back
 to the first point and repeat; "pingpong", the default for movers: walk the
-path forwards then backwards), start_delay (s of sim time standing at the
+path forwards then backwards; "once": walk the path once, then stand at its
+last point), start_delay (s of sim time standing at the
 first point before walking).
 
 timeline() is the one definition of where a path entity is when: to_sdf()
@@ -37,6 +38,11 @@ ACTOR_Z = 1.0
 # path segments this finely keeps the actor within a few cm of the straight
 # path (only corners get rounded), so the linear ground truth stays accurate.
 WAYPOINT_SPACING = 0.25
+
+# "once" paths: the entity stands at its last point this long after the walk (in
+# practice forever; one more waypoint keeps pose_at and Gazebo's looping actor
+# script unchanged).
+STAND_SECONDS = 1e6
 
 # Nothing may stand within this distance of the spawn point (origin).
 SPAWN_CLEARANCE = 1.0
@@ -108,6 +114,8 @@ def _points(entity):
         return path + path[-2::-1]
     if mode == 'loop':
         return path if path[0] == path[-1] else path + [path[0]]
+    if mode == 'once':
+        return path
     raise ValueError(f"'{entity['name']}': unknown mode '{mode}'")
 
 
@@ -132,7 +140,11 @@ def timeline(entity):
             f = i / pieces
             keys.append((t + f * length / speed, x0 + f * (x1 - x0), y0 + f * (y1 - y0), yaw))
         t += length / speed
-    keys.append((t, *corners[-1], keys[0][3]))
+    if entity.get('mode', 'loop') == 'once':
+        keys.append((t, *corners[-1], keys[-1][3]))
+        keys.append((t + STAND_SECONDS, *corners[-1], keys[-1][3]))
+    else:
+        keys.append((t, *corners[-1], keys[0][3]))
     # Unwrap yaw so consecutive points never differ by more than pi.
     unwrapped = [keys[0]]
     for k in keys[1:]:
