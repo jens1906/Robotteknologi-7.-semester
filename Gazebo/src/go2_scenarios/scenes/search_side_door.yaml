@@ -1,0 +1,26 @@
+# Search: corridor with a side door, the leader turns in (spec scenario 2, heading spread
+# and wall drop). The search target should move to the door before the Go2 passes it.
+#
+#          +--------+
+#          |  room  |
+#  y=1.5  +---- ==== ---------------------+     ==== door, x in [7.4, 8.6]
+#  Go2 >  |  leader ->  ^                 |
+#  y=-1.5 +-------------------------------+
+#        x=-2          8                  25
+
+static:
+  - {type: wall, name: corridor_north_1, from: [-2, 1.5], to: [7.4, 1.5], height: 2.5}
+  - {type: wall, name: corridor_north_2, from: [8.6, 1.5], to: [25, 1.5], height: 2.5}
+  - {type: wall, name: corridor_south, from: [-2, -1.5], to: [25, -1.5], height: 2.5}
+  - {type: wall, name: corridor_west, from: [-2, -1.5], to: [-2, 1.5], height: 2.5}
+  - {type: wall, name: corridor_east, from: [25, -1.5], to: [25, 1.5], height: 2.5}
+  - {type: wall, name: room_west, from: [5, 1.5], to: [5, 8], height: 2.5}
+  - {type: wall, name: room_east, from: [12, 1.5], to: [12, 8], height: 2.5}
+  - {type: wall, name: room_north, from: [5, 8], to: [12, 8], height: 2.5}
+
+people:
+  - name: leader
+    path: [[1.5, 0], [8, 0], [8, 3], [10.5, 6]]
+    mode: once
+    speed: 0.45
+    start_delay: 15

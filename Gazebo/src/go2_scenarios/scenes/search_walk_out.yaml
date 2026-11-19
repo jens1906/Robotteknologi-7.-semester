@@ -1,0 +1,13 @@
+# Search: the leader walks out of the search window (spec scenario 5, out-of-window bucket
+# and give-up). Open field; the leader runs off faster than the Go2 can follow and turns
+# behind a wall, so the search must end in GIVE_UP within t_max without crashing.
+
+static:
+  - {type: wall, name: screen, from: [8, 1.5], to: [8, 30], height: 2.5}
+
+people:
+  - name: leader
+    path: [[1.5, 0], [10, 0], [10, 30]]
+    mode: once
+    speed: 1.5
+    start_delay: 15

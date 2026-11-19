@@ -1,0 +1,24 @@
+# Search: the leader stops just behind a corner (spec scenario 4, stopped state and
+# "looked here, not there"). Corridor along x, turning north at x = 8.
+#
+#                 |   |
+#                 | L |  leader stops at (9.5, 3)
+#  y=1.5  +-------+   |
+#  Go2 >  | leader -> |
+#  y=-1.5 +-----------+
+#        x=-2    8   11
+
+static:
+  - {type: wall, name: corridor_north, from: [-2, 1.5], to: [8, 1.5], height: 2.5}
+  - {type: wall, name: corridor_south, from: [-2, -1.5], to: [11, -1.5], height: 2.5}
+  - {type: wall, name: corridor_west, from: [-2, -1.5], to: [-2, 1.5], height: 2.5}
+  - {type: wall, name: corridor_east, from: [11, -1.5], to: [11, 12], height: 2.5}
+  - {type: wall, name: branch_west, from: [8, 1.5], to: [8, 12], height: 2.5}
+  - {type: wall, name: branch_end, from: [8, 12], to: [11, 12], height: 2.5}
+
+people:
+  - name: leader
+    path: [[1.5, 0], [9.5, 0], [9.5, 3]]
+    mode: once
+    speed: 0.45
+    start_delay: 15
