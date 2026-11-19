@@ -36,6 +36,7 @@
 
     radius_std: 0.05            # m
     dropout_prob: 0.03          # chance an object is missing from a frame
+    leader_always_obstacle: false  # true: an unidentified leader is always an obstacle
     leader_confusion_prob: 0.0  # chance the leader is reported as a plain person
     occlusion: true             # objects hide what is behind them
     noise_scale: 1.0            # scales all noise; 0 = exact ground truth

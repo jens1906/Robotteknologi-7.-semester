@@ -164,6 +164,23 @@ DRIVING FROM follow_anywhere_ws
   can't read its Fast DDS shared memory (see follow_anywhere_ws/README.md).
 
 
+SEARCH SCENARIOS (lost-leader search, follow_anywhere_ws/docs/leader_search_spec.md)
+  Five scenes in go2_scenarios/scenes score leader_search against the spec:
+  search_corridor, search_side_door, search_t_junction, search_corner_stop,
+  search_walk_out. They run on the host (no Docker), next to follow_anywhere_ws:
+
+    source follow_anywhere_ws/install/setup.bash     # leader_search, navigation_cpp
+    colcon build --base-paths Gazebo/src/go2_scenarios 2dSim/src/go2_sim2d \
+        --build-base build_sim --install-base install_sim
+    source install_sim/local_setup.bash
+
+    ros2 launch go2_sim2d search_eval.launch.py world:=search_side_door seed:=3
+    ros2 run go2_sim2d search_batch --runs 50 --jobs 4     # pass-rate table
+
+  One run is about a minute of real time; search_batch gives every parallel run
+  its own ROS_DOMAIN_ID. Scene paths with mode: once walk once and then stand.
+
+
 TESTS
   Geometry and fake perception (no ROS needed):
     cd 2dSim/src/go2_sim2d && python3 -m pytest test

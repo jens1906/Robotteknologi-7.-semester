@@ -65,6 +65,10 @@ class Params:
     radius_std: float = 0.05
     # Chance per object per frame that it is not reported.
     dropout_prob: float = 0.03
+    # Report the leader as an obstacle whenever it is not identified as the leader, even when no
+    # sensor sees it (blind sectors, dropouts): the real stack's lidar map keeps it. For tests
+    # where losing the leader must not mean driving into it (search_eval).
+    leader_always_obstacle: bool = False
     # Chance per frame that the leader is reported as an ordinary person.
     leader_confusion_prob: float = 0.0
     occlusion: bool = True
@@ -212,10 +216,11 @@ class FakePerception:
             lidar = self._lidar_sees(robot, shapes, index, points)
             camera = self._sees(robot, shapes, index, points,
                                 p.camera_fov_deg, p.camera_range_min, p.camera_range_max)
-            if not (lidar or camera):
+            unseen = not (lidar or camera) or self.rng.random() < p.dropout_prob
+            if unseen and not (e.leader and p.leader_always_obstacle):
                 continue
-            if self.rng.random() < p.dropout_prob:
-                continue
+            if unseen:  # the leader as a plain obstacle, measured like the lidar would
+                lidar, camera = True, False
 
             # Lidar measures range better, the camera bearing.
             ra, rb = p.lidar_range_std if lidar else p.camera_range_std
