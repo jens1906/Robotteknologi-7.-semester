@@ -6,6 +6,7 @@ import zipfile
 import numpy as np
 import onnx
 import onnxruntime
+from ament_index_python.packages import PackageNotFoundError, get_package_prefix
 from onnx import helper, numpy_helper
 from ultralytics import YOLO
 from ultralytics.utils.downloads import attempt_download_asset
@@ -30,9 +31,25 @@ PROJECTED_CELLS_NAME = 'projected_cells'
 SPLIT_CHECK_BATCH_SIZE = 3
 MAXIMUM_SPLIT_DIFFERENCE = 1e-4
 
+# Image transport plugins (ROS apt packages, uv cannot install them): without them the bags record no camera images
+IMAGE_TRANSPORT_PLUGINS = ('compressed_image_transport', 'compressed_depth_image_transport')
+IMAGE_TRANSPORT_INSTALL_COMMAND = 'sudo apt install ros-jazzy-image-transport-plugins'
+
 # TensorRT detector engine (only on the machine that runs it, e.g. the Orin)
 ENGINE_FLAG = '--engine'
 ENGINE_IMAGE_SIZE = 640
+
+
+def CheckImageTransportPlugins():
+    missingPlugins = []
+    for pluginPackage in IMAGE_TRANSPORT_PLUGINS:
+        try:
+            get_package_prefix(pluginPackage)
+        except PackageNotFoundError:
+            missingPlugins.append(pluginPackage)
+    if missingPlugins:
+        sys.exit(f'Missing {", ".join(missingPlugins)}: the bags would record no camera images. '
+                 f'Install with `{IMAGE_TRANSPORT_INSTALL_COMMAND}` (ROS sourced), then run again.')
 
 
 def FetchYoloModel():
@@ -98,6 +115,7 @@ def ExportDetectorEngine():
 
 
 def main():
+    CheckImageTransportPlugins()
     os.makedirs(MODELS_FOLDER, exist_ok=True)
     FetchYoloModel()
     FetchOsnetModel()

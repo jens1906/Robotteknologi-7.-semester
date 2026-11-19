@@ -171,7 +171,8 @@ function updateRecordInfo() {
   }
   const seconds = Math.floor((performance.now() - recording.since) / 1000);
   const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-  info.textContent = recording.state === 'recording' ? `● rec ${time}` : `saving… ${time}`;
+  info.textContent = recording.state === 'recording' ? `● rec ${time}`
+    : recording.state === 'starting' ? `starting evaluation… ${time}` : `saving… ${time}`;
   if (recording.state === 'recording' && performance.now() < markNotice.until) info.textContent += ` · ${markNotice.text}`;
   info.title = recording.name;
 }

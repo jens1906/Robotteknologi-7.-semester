@@ -21,7 +21,7 @@
 //   text   {"op":"error","topic":"/x","error":"..."}
 //   text   {"op":"result","success":true,"message":"..."}   (calibrate, clear_leader)
 //   text   {"op":"mark_result","success":true,"message":"..."}   (mark_event)
-//   text   {"op":"recording","state":"idle|recording|finishing|saving","name":"...","elapsed":s,"error":"..."}
+//   text   {"op":"recording","state":"idle|starting|recording|finishing|saving","name":"...","elapsed":s,"error":"..."}
 //   text   {"op":"navigation","state":"off|on|stopping","error":"..."}
 //   binary [u8 kind][u8 0][u16le topic_len][topic][pad to 4][payload]
 //          kind 1 = JPEG, 2 = PNG, 3 = float32 x,y,z,intensity points
@@ -75,6 +75,8 @@ namespace
 constexpr auto RECORDER_STOP_TIMEOUT = 15s;
 constexpr auto EVALUATION_FINISH_TIMEOUT = 3s;
 constexpr auto NAVIGATION_STOP_TIMEOUT = 5s;
+constexpr auto EVALUATION_START_TIMEOUT = 20s;
+constexpr auto EVALUATION_STOP_TIMEOUT = 5s;
 
 // Reads a string or number field from the flat JSON objects the browser sends.
 std::string json_field(const std::string & js, const std::string & key)
@@ -287,6 +289,12 @@ public:
     }
     if (recorder_thread_.joinable()) {recorder_thread_.join();}
     {
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      if (record_state_ == "starting") {record_state_ = "idle";}
+    }
+    if (evaluation_start_thread_.joinable()) {evaluation_start_thread_.join();}
+    stop_evaluation_node();
+    {
       std::lock_guard<std::mutex> lk(navigation_mtx_);
       if (navigation_state_ == "on") {signal_navigation_stop();}
     }
@@ -470,10 +478,123 @@ private:
 
   void start_recording()
   {
+    {
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      if (record_state_ != "idle") {return;}
+    }
+    if (evaluation_start_thread_.joinable()) {evaluation_start_thread_.join();}
+    auto missing = missing_camera_images();
+    if (!missing.empty()) {
+      refuse_recording("BagRecorder", "no compressed camera images (" + missing + "): camera not running or "
+        "ros-jazzy-image-transport-plugins not installed, not recording");
+      return;
+    }
+    if (start_run_client_->service_is_ready()) {
+      start_bag();
+      return;
+    }
     std::string error;
     {
       std::lock_guard<std::mutex> lk(record_mtx_);
       if (record_state_ != "idle") {return;}
+      error = spawn_evaluation_node();
+      if (error.empty()) {
+        record_state_ = "starting";
+        record_error_.clear();
+        record_start_ = std::chrono::steady_clock::now();
+        evaluation_start_thread_ = std::thread([this] {wait_for_evaluation_node();});
+      }
+    }
+    if (!error.empty()) {
+      refuse_recording("EvaluationReport", error);
+      return;
+    }
+    broadcast(recording_state());
+  }
+
+  std::string missing_camera_images()
+  {
+    auto topics = get_topic_names_and_types();
+    std::string missing;
+    for (std::string topic : {"/camera/camera/color/image_raw/compressed",
+        "/camera/camera/aligned_depth_to_color/image_raw/compressedDepth"})
+    {
+      if (!topics.count(topic)) {missing += (missing.empty() ? "" : ", ") + topic;}
+    }
+    return missing;
+  }
+
+  void refuse_recording(const std::string & area, const std::string & error)
+  {
+    {
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      record_error_ = error;
+    }
+    report_error(area, error);
+    broadcast(recording_state());
+  }
+
+  std::string spawn_evaluation_node()
+  {
+    int status = 0;
+    if (evaluation_pid_ > 0 && waitpid(evaluation_pid_, &status, WNOHANG) == 0) {return "";}
+    pid_t pid;
+    int err = spawn_process_group({"ros2", "run", "perception", "evaluation_node"}, pid);
+    if (err != 0) {
+      evaluation_pid_ = -1;
+      return std::string("cannot start evaluation_node: ") + std::strerror(err) + ", not recording";
+    }
+    evaluation_pid_ = pid;
+    RCLCPP_INFO(get_logger(), "evaluation_node started for the recording");
+    return "";
+  }
+
+  void wait_for_evaluation_node()
+  {
+    auto deadline = std::chrono::steady_clock::now() + EVALUATION_START_TIMEOUT;
+    bool ready = false;
+    while (!ready && std::chrono::steady_clock::now() < deadline) {
+      {
+        std::lock_guard<std::mutex> lk(record_mtx_);
+        if (record_state_ != "starting") {return;}
+      }
+      ready = start_run_client_->wait_for_service(500ms);
+    }
+    if (ready) {
+      start_bag();
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      if (record_state_ != "starting") {return;}
+      record_state_ = "idle";
+    }
+    refuse_recording("EvaluationReport", "evaluation_node did not start within " +
+      std::to_string(EVALUATION_START_TIMEOUT.count()) + " s, not recording");
+  }
+
+  void stop_evaluation_node()
+  {
+    if (evaluation_pid_ <= 0) {return;}
+    kill(-evaluation_pid_, SIGINT);
+    int status = 0;
+    auto deadline = std::chrono::steady_clock::now() + EVALUATION_STOP_TIMEOUT;
+    while (waitpid(evaluation_pid_, &status, WNOHANG) == 0 && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(100ms);
+    }
+    if (waitpid(evaluation_pid_, &status, WNOHANG) == 0) {
+      kill(-evaluation_pid_, SIGKILL);
+      waitpid(evaluation_pid_, &status, 0);
+    }
+    evaluation_pid_ = -1;
+  }
+
+  void start_bag()
+  {
+    std::string error;
+    {
+      std::lock_guard<std::mutex> lk(record_mtx_);
+      if (record_state_ != "idle" && record_state_ != "starting") {return;}
       if (recorder_thread_.joinable()) {recorder_thread_.join();}
 
       char stamp[16];
@@ -490,6 +611,7 @@ private:
       if (err != 0) {
         error = std::string("cannot start ros2 bag record: ") + std::strerror(err);
         record_error_ = error;
+        record_state_ = "idle";
       } else {
         recorder_pid_ = pid;
         record_path_ = path;
@@ -1005,6 +1127,8 @@ private:
   std::chrono::steady_clock::time_point record_start_, record_stop_;
   pid_t recorder_pid_ = -1;
   std::thread recorder_thread_;
+  pid_t evaluation_pid_ = -1;
+  std::thread evaluation_start_thread_;
 
   std::mutex navigation_mtx_;
   std::string navigation_state_ = "off";
