@@ -7,6 +7,8 @@ To include:
 - imgsz 640 for the RealSense (its own resolution).
 - A TensorRT engine (detectorModelFile ending in .engine, made on the Orin by scripts/fetch_models.py --engine) is
   loaded the same way; its precision and image size were fixed when it was built.
+- reset(): forget all tracks (e.g. a replayed rosbag starts over). Ultralytics ignores `persist` after
+  the first call, so reset means reloading the model.
 - Set YOLO_AUTOINSTALL=False: ultralytics would otherwise pip-install packages into the environment.
 - The ids only hold for seconds (until a person is hidden or leaves the image). Recognising the leader
   again under a new id is leader_manager's job.

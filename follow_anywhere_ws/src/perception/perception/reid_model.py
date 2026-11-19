@@ -25,14 +25,16 @@ To include:
 
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 import onnxruntime
 
 # Parameter defaults (set in config/perception_params.yaml)
+REQUESTED_DEVICE = 'auto'
+REID_THREADS = 2
 REID_SETTING_DEFAULTS = {
-    'reidThreads': 2,
     'reidDepthMask': 'cells',
     'depthMaskBand': 0.5,
 }
@@ -60,6 +62,12 @@ class PersonDescription:
     visibleCells: np.ndarray
 
 
+@dataclass
+class DescriptionStack:
+    cellFeatures: np.ndarray
+    visibleCells: np.ndarray
+
+
 def SelectExecutionProviders(requestedDevice):
     if requestedDevice not in ('auto', 'cuda'):
         return [CPU_PROVIDER], ''
@@ -69,11 +77,11 @@ def SelectExecutionProviders(requestedDevice):
 
 
 class ReidModel:
-    def __init__(self, backbonePath, settings):
-        self.settings = settings
-        executionProviders, self.deviceWarning = SelectExecutionProviders(settings.requestedDevice)
+    def __init__(self, backbonePath, requestedDevice=REQUESTED_DEVICE, reidThreads=REID_THREADS, reidSettings=None):
+        self.settings = SimpleNamespace(**{**REID_SETTING_DEFAULTS, **(reidSettings or {})})
+        executionProviders, self.deviceWarning = SelectExecutionProviders(requestedDevice)
         sessionOptions = onnxruntime.SessionOptions()
-        sessionOptions.intra_op_num_threads = settings.reidThreads
+        sessionOptions.intra_op_num_threads = reidThreads
         self.session = onnxruntime.InferenceSession(backbonePath, sessionOptions, providers=executionProviders)
         if CUDA_PROVIDER in executionProviders and CUDA_PROVIDER not in self.session.get_providers():
             self.deviceWarning = NO_CUDA_PROVIDER_WARNING
@@ -146,7 +154,7 @@ def FindHiddenRows(person, top, bottom, keypointConfidence):
 
 def StackDescriptions(descriptions):
     if not descriptions:
-        return PersonDescription(np.zeros((0, CELL_COUNT, OSNET_EMBEDDING_SIZE), np.float32),
-                                 np.zeros((0, CELL_COUNT), np.float32))
-    return PersonDescription(np.stack([description.cellFeatures for description in descriptions]),
-                             np.stack([description.visibleCells for description in descriptions]))
+        return DescriptionStack(np.zeros((0, CELL_COUNT, OSNET_EMBEDDING_SIZE), np.float32),
+                                np.zeros((0, CELL_COUNT), np.float32))
+    return DescriptionStack(np.stack([description.cellFeatures for description in descriptions]),
+                            np.stack([description.visibleCells for description in descriptions]))

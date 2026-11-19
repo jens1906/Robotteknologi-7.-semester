@@ -9,6 +9,8 @@ To include:
 - The circle is built from the measurement (centre fed to velocity_tracker), then again around the filtered centre
   with the same radius; the published points come from the filtered circle.
 - Everything 2D in base_link (z = 0).
+- Later: static obstacles from the lidar (/utlidar/cloud_base, ground removed, obstacleMaxRange), the depth image as
+  fallback; points of a tracked person are not also a static obstacle.
 """
 
 import math

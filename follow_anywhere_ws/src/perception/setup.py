@@ -31,6 +31,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            # perception_node.main does not exist yet: `ros2 run` / the launch file fail until it is written
             'perception_node = perception.perception_node:main',
             'calibrate_camera = perception.camera_calibration_node:main',
             'evaluation_node = perception.evaluation_node:main',
