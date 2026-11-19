@@ -15,6 +15,7 @@ let savedOpen = JSON.parse(localStorage.getItem(STORE) || 'null');
 let recording = { state: 'idle', since: 0, name: '', error: '' };
 let markCounts = { collision: 0, wrong_leader: 0 };
 let markNotice = { text: '', until: 0 };
+let navigation = { state: 'off', error: '' };
 
 // ------------------------------------------------------------- connection
 
@@ -48,6 +49,7 @@ function setStatus(ok) {
   s.className = ok ? 'ok' : 'bad';
   $('#record-button').disabled = !ok;
   updateMarkButtons();
+  updateNavigationButton();
 }
 
 function onText(m) {
@@ -76,11 +78,28 @@ function onText(m) {
       break;
     case 'result': for (const v of views) v.HandleServiceResult(m); break;
     case 'recording': onRecording(m); break;
+    case 'navigation':
+      navigation = { state: m.state, error: m.error };
+      updateNavigationButton();
+      break;
     case 'mark_result':
       markNotice = { text: m.message, until: performance.now() + 3000 };
       updateRecordInfo();
       break;
   }
+}
+
+$('#navigation-button').onclick = () => {
+  send({ op: navigation.state === 'off' ? 'navigation_start' : 'navigation_stop' });
+};
+
+function updateNavigationButton() {
+  const b = $('#navigation-button');
+  const connected = ws && ws.readyState === WebSocket.OPEN;
+  b.textContent = { off: 'Start navigation', on: 'Stop navigation', stopping: 'Stopping navigation…' }[navigation.state];
+  b.className = navigation.state === 'on' ? 'active' : navigation.error ? 'bad' : '';
+  b.title = navigation.error || 'Starts and stops ros2 run navigation_cpp follow_leader_cpp';
+  b.disabled = !connected || navigation.state === 'stopping';
 }
 
 $('#record-button').onclick = () => {

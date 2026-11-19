@@ -679,6 +679,11 @@ public:
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<LeaderFollower>();
+  rclcpp::contexts::get_global_default_context()->add_pre_shutdown_callback(
+      [weak = std::weak_ptr<LeaderFollower>(node)]() {
+        if (auto leaderFollower = weak.lock())
+          leaderFollower->stop();
+      });
   rclcpp::spin(node);
   rclcpp::shutdown();
   return 0;

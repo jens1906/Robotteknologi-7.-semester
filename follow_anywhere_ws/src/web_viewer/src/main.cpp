@@ -12,6 +12,7 @@
 //     "collision":-1,"wrong_leader":0,"leader_in_sight":1,"notes":"..."}
 //     (answers for the evaluation report: -1 = not answered, 0 = no, 1 = yes)
 //   {"op":"mark_event","event_type":"collision|wrong_leader","note":"..."}
+//   {"op":"navigation_start"}   {"op":"navigation_stop"}
 // Server -> browser:
 //   text   {"op":"hello","defaults":[...]}
 //   text   {"op":"topics","topics":[["/x","pkg/msg/T"],...]}
@@ -21,6 +22,7 @@
 //   text   {"op":"result","success":true,"message":"..."}   (calibrate, clear_leader)
 //   text   {"op":"mark_result","success":true,"message":"..."}   (mark_event)
 //   text   {"op":"recording","state":"idle|recording|finishing|saving","name":"...","elapsed":s,"error":"..."}
+//   text   {"op":"navigation","state":"off|on|stopping","error":"..."}
 //   binary [u8 kind][u8 0][u16le topic_len][topic][pad to 4][payload]
 //          kind 1 = JPEG, 2 = PNG, 3 = float32 x,y,z,intensity points
 //          kind 1 and 2 start the payload with [u32 sec][u32 nanosec] of the
@@ -72,6 +74,7 @@ namespace
 
 constexpr auto RECORDER_STOP_TIMEOUT = 15s;
 constexpr auto EVALUATION_FINISH_TIMEOUT = 3s;
+constexpr auto NAVIGATION_STOP_TIMEOUT = 5s;
 
 // Reads a string or number field from the flat JSON objects the browser sends.
 std::string json_field(const std::string & js, const std::string & key)
@@ -189,6 +192,30 @@ std::filesystem::path free_path(const std::filesystem::path & dir, const std::st
   return path;
 }
 
+int spawn_process_group(std::vector<std::string> args, pid_t & pid)
+{
+  std::vector<char *> argv;
+  for (auto & a : args) {argv.push_back(a.data());}
+  argv.push_back(nullptr);
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+  posix_spawnattr_setpgroup(&attr, 0);
+  posix_spawn_file_actions_t files;
+  posix_spawn_file_actions_init(&files);
+  posix_spawn_file_actions_addopen(&files, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+  int err = posix_spawnp(&pid, argv[0], &files, &attr, argv.data(), environ);
+  posix_spawn_file_actions_destroy(&files);
+  posix_spawnattr_destroy(&attr);
+  return err;
+}
+
+std::string exit_reason(int status)
+{
+  return WIFSIGNALED(status) ? "signal " + std::to_string(WTERMSIG(status)) :
+    "exit code " + std::to_string(WEXITSTATUS(status));
+}
+
 }  // namespace
 
 class WebViewer : public rclcpp::Node
@@ -256,6 +283,11 @@ public:
       if (record_state_ == "recording" || record_state_ == "finishing") {signal_recorder_stop();}
     }
     if (recorder_thread_.joinable()) {recorder_thread_.join();}
+    {
+      std::lock_guard<std::mutex> lk(navigation_mtx_);
+      if (navigation_state_ == "on") {signal_navigation_stop();}
+    }
+    if (navigation_thread_.joinable()) {navigation_thread_.join();}
     server_->stop();
   }
 
@@ -295,6 +327,7 @@ private:
     }
     refresh_topics(true, s);
     s->send(recording_state(), false, false);
+    s->send(navigation_state(), false, false);
   }
 
   void on_close(const SessionPtr & s)
@@ -334,6 +367,14 @@ private:
     }
     if (op == "mark_event") {
       mark_event(s, json_field(msg, "event_type"), json_field(msg, "note"));
+      return;
+    }
+    if (op == "navigation_start") {
+      start_navigation();
+      return;
+    }
+    if (op == "navigation_stop") {
+      stop_navigation();
       return;
     }
     auto topic = json_field(msg, "topic");
@@ -439,22 +480,9 @@ private:
       std::filesystem::create_directories(bag_directory_, ec);
       auto path = free_path(bag_directory_, std::string("recording_") + stamp);
 
-      std::vector<std::string> args = {"ros2", "bag", "record", "-a", "-o", path.string(),
-        "--exclude-regex", exclude_regex_, "--disable-keyboard-controls"};
-      std::vector<char *> argv;
-      for (auto & a : args) {argv.push_back(a.data());}
-      argv.push_back(nullptr);
-      posix_spawnattr_t attr;
-      posix_spawnattr_init(&attr);
-      posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
-      posix_spawnattr_setpgroup(&attr, 0);
-      posix_spawn_file_actions_t files;
-      posix_spawn_file_actions_init(&files);
-      posix_spawn_file_actions_addopen(&files, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
       pid_t pid;
-      int err = posix_spawnp(&pid, "ros2", &files, &attr, argv.data(), environ);
-      posix_spawn_file_actions_destroy(&files);
-      posix_spawnattr_destroy(&attr);
+      int err = spawn_process_group({"ros2", "bag", "record", "-a", "-o", path.string(),
+          "--exclude-regex", exclude_regex_, "--disable-keyboard-controls"}, pid);
 
       if (err != 0) {
         error = std::string("cannot start ros2 bag record: ") + std::strerror(err);
@@ -567,9 +595,8 @@ private:
           std::to_string(RECORDER_STOP_TIMEOUT.count()) + " s and was killed, bag left as " +
           record_name_ + " (repair with ros2 bag reindex)";
       } else if (record_state_ != "saving") {
-        error = "ros2 bag record stopped by itself (" + std::string(WIFSIGNALED(status) ?
-          "signal " + std::to_string(WTERMSIG(status)) :
-          "exit code " + std::to_string(WEXITSTATUS(status))) + "), bag left as " + record_name_;
+        error = "ros2 bag record stopped by itself (" + exit_reason(status) +
+          "), bag left as " + record_name_;
       } else if (!std::filesystem::exists(record_path_ / "metadata.yaml")) {
         error = "bag was not finalised, no metadata.yaml in " + record_name_;
       } else if (!record_title_.empty()) {
@@ -628,6 +655,85 @@ private:
       }
     }
     for (auto & s : targets) {s->send(p, false, false);}
+  }
+
+  // ---------------------------------------------------------- navigation
+
+  void start_navigation()
+  {
+    std::string error;
+    std::thread finished;
+    {
+      std::lock_guard<std::mutex> lk(navigation_mtx_);
+      if (navigation_state_ != "off") {return;}
+      finished = std::move(navigation_thread_);
+      pid_t pid;
+      int err = spawn_process_group({"ros2", "run", "navigation_cpp", "follow_leader_cpp"}, pid);
+      if (err != 0) {
+        error = std::string("cannot start navigation: ") + std::strerror(err);
+        navigation_error_ = error;
+      } else {
+        navigation_pid_ = pid;
+        navigation_error_.clear();
+        navigation_state_ = "on";
+        navigation_thread_ = std::thread([this, pid] {wait_for_navigation(pid);});
+        RCLCPP_INFO(get_logger(), "navigation started");
+      }
+    }
+    if (finished.joinable()) {finished.join();}
+    if (!error.empty()) {report_error("Navigation", error);}
+    broadcast(navigation_state());
+  }
+
+  void stop_navigation()
+  {
+    {
+      std::lock_guard<std::mutex> lk(navigation_mtx_);
+      if (navigation_state_ != "on") {return;}
+      signal_navigation_stop();
+    }
+    broadcast(navigation_state());
+  }
+
+  void signal_navigation_stop()
+  {
+    navigation_state_ = "stopping";
+    navigation_stop_ = std::chrono::steady_clock::now();
+    kill(-navigation_pid_, SIGINT);
+    kill(-navigation_pid_, SIGCONT);
+  }
+
+  void wait_for_navigation(pid_t pid)
+  {
+    int status = 0;
+    while (waitpid(pid, &status, WNOHANG) == 0) {
+      std::this_thread::sleep_for(100ms);
+      std::lock_guard<std::mutex> lk(navigation_mtx_);
+      auto waited = std::chrono::steady_clock::now() - navigation_stop_;
+      if (navigation_state_ == "stopping" && waited > NAVIGATION_STOP_TIMEOUT) {kill(-pid, SIGKILL);}
+    }
+    std::string error;
+    {
+      std::lock_guard<std::mutex> lk(navigation_mtx_);
+      if (navigation_state_ != "stopping") {
+        error = "navigation stopped by itself (" + exit_reason(status) + ")";
+      }
+      navigation_state_ = "off";
+      navigation_error_ = error;
+      navigation_pid_ = -1;
+      if (error.empty()) {RCLCPP_INFO(get_logger(), "navigation stopped");}
+    }
+    if (!error.empty()) {report_error("Navigation", error);}
+    broadcast(navigation_state());
+  }
+
+  Payload navigation_state()
+  {
+    std::lock_guard<std::mutex> lk(navigation_mtx_);
+    std::string m = "{\"op\":\"navigation\",\"state\":\"" + navigation_state_ + "\",\"error\":";
+    json_escape(m, navigation_error_);
+    m += '}';
+    return text(std::move(m));
   }
 
   // ------------------------------------------------------- subscriptions
@@ -896,6 +1002,13 @@ private:
   std::chrono::steady_clock::time_point record_start_, record_stop_;
   pid_t recorder_pid_ = -1;
   std::thread recorder_thread_;
+
+  std::mutex navigation_mtx_;
+  std::string navigation_state_ = "off";
+  std::string navigation_error_;
+  std::chrono::steady_clock::time_point navigation_stop_;
+  pid_t navigation_pid_ = -1;
+  std::thread navigation_thread_;
 
   std::unique_ptr<Server> server_;
 };
