@@ -3,11 +3,6 @@
 # Topic names are not parameters: they are written in perception_node.py (change them with a remapping in the launch file).
 perception_node:
   ros__parameters:
-    baseFrame: base_link
-
-    # --- switches -------------------------------------------------------------------------------
-    useLidar: true           # lidar for static obstacles; falls back to the depth image when no cloud arrives
-
     # --- person detector + tracker --------------------------------------------------------------
     detectorModelFile: yolov8n-pose.pt       # in resource/models/ (scripts/fetch_models.py); pose model: keypoints for depth sampling. On the Orin: yolov8n-pose.engine (TensorRT FP16, made there by fetch_models.py --engine)
     detectorImageSize: 640                   # the camera's own resolution; 960 was ~2x slower on CPU
@@ -96,8 +91,6 @@ perception_node:
     # --- obstacles ------------------------------------------------------------------------------
     personRadiusMin: 0.15                    # GUESS: m, smallest radius of the circle a person is modelled as (half the box width)
     personRadiusMax: 0.4                     # GUESS: m, largest radius (arms out make the box wide)
-    obstacleMaxRange: 6.0                   # m, farther points are ignored
-    groundHeight: 0.05                       # m above the ground plane that counts as ground
 
 # Settings of `ros2 run perception calibrate_camera` (camera_calibration_node.py), which writes cameraX..cameraYaw above.
 # It reads this section itself, so no --params-file is needed. Scene and use: README, "Camera calibration".

@@ -50,8 +50,9 @@ To include:
 
 import math
 import os
+import zipfile
 from collections import deque
-from types import SimpleNamespace
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -111,13 +112,21 @@ FOUND_EVENT = 'found'
 NO_TRACK_ID = -1
 
 
+@dataclass
+class RecentComparison:
+    distance: float
+    sharedArea: float
+    seconds: float
+
+
+# Comparison of a person not compared recently
+UNKNOWN_COMPARISON = RecentComparison(math.nan, math.nan, -math.inf)
+
+
 class LeaderManager:
-    def __init__(self, compareDescriptions, leaderSettings=None):
-        self.settings = SimpleNamespace(**{**LEADER_SETTING_DEFAULTS, **(leaderSettings or {})})
+    def __init__(self, compareDescriptions, settings):
+        self.settings = settings
         self.compareDescriptions = compareDescriptions
-        self.distanceByTrackId = {}
-        self.sharedAreaByTrackId = {}
-        self.distanceSecondsByTrackId = {}
         self.Reset()
 
     def Reset(self):
@@ -147,9 +156,7 @@ class LeaderManager:
         self.badCheckCount = 0
         self.winHistories = {}
         self.recentDistancesByTrackId = {}
-        self.distanceByTrackId.clear()
-        self.sharedAreaByTrackId.clear()
-        self.distanceSecondsByTrackId.clear()
+        self.recentComparisons = {}
 
     def Enroll(self, trackId, nowSeconds):
         self.Reset()
@@ -162,6 +169,7 @@ class LeaderManager:
         self.eventReason = ''
         self.reidMargin = math.nan
         self.visibleLeaderTrackId = NO_TRACK_ID
+        self.ForgetOldDistances(nowSeconds)
         if self.state == ENROLLING_STATE:
             return self.UpdateEnrolling(detectedPeople, describePeople, nowSeconds, imageWidth)
         if self.state == FOLLOWING_STATE:
@@ -179,8 +187,11 @@ class LeaderManager:
         anchorGroups = [viewGroup for viewGroup in VIEW_GROUPS for _ in range(self.anchorCounts[viewGroup])]
         anchorStack = StackDescriptions(anchorDescriptions)
         os.makedirs(os.path.dirname(leaderFilePath) or '.', exist_ok=True)
-        np.savez(leaderFilePath, cellFeatures=anchorStack.cellFeatures, visibleCells=anchorStack.visibleCells,
-                 viewGroups=np.array(anchorGroups), modelTag=modelTag)
+        temporaryFilePath = leaderFilePath + '.tmp'
+        with open(temporaryFilePath, 'wb') as leaderFile:
+            np.savez(leaderFile, cellFeatures=anchorStack.cellFeatures, visibleCells=anchorStack.visibleCells,
+                     viewGroups=np.array(anchorGroups), modelTag=modelTag)
+        os.replace(temporaryFilePath, leaderFilePath)
 
     def LoadLeader(self, leaderFilePath, modelTag):
         try:
@@ -190,7 +201,7 @@ class LeaderManager:
             cellFeatures = savedLeader['cellFeatures'].astype(np.float32)
             visibleCells = savedLeader['visibleCells'].astype(np.float32)
             viewGroups = savedLeader['viewGroups'].astype(int)
-        except (OSError, KeyError, ValueError):
+        except (OSError, KeyError, ValueError, EOFError, zipfile.BadZipFile):
             return False
         if cellFeatures.ndim != 3 or not len(cellFeatures) == len(visibleCells) == len(viewGroups):
             return False
@@ -202,17 +213,11 @@ class LeaderManager:
         self.state = SEARCHING_STATE
         return True
 
-    def GetRecentDistance(self, trackId, nowSeconds):
-        distanceSeconds = self.distanceSecondsByTrackId.get(trackId)
-        if distanceSeconds is None or nowSeconds - distanceSeconds > self.settings.recentDistanceTime:
-            return math.nan
-        return self.distanceByTrackId[trackId]
-
-    def GetRecentSharedArea(self, trackId, nowSeconds):
-        distanceSeconds = self.distanceSecondsByTrackId.get(trackId)
-        if distanceSeconds is None or nowSeconds - distanceSeconds > self.settings.recentDistanceTime:
-            return math.nan
-        return self.sharedAreaByTrackId[trackId]
+    def GetRecentComparison(self, trackId, nowSeconds):
+        comparison = self.recentComparisons.get(trackId, UNKNOWN_COMPARISON)
+        if nowSeconds - comparison.seconds > self.settings.recentDistanceTime:
+            return UNKNOWN_COMPARISON
+        return comparison
 
     def UpdateEnrolling(self, detectedPeople, describePeople, nowSeconds, imageWidth):
         person = self.FindPerson(detectedPeople, self.enrollTrackId)
@@ -237,7 +242,7 @@ class LeaderManager:
             return ENROLL_FAILED_EVENT
         if person is None or nowSeconds - self.lastSampleSeconds < self.settings.enrollGap:
             return NO_EVENT
-        if self.IsOverlapped(person, detectedPeople) or not IsCleanView(person, imageWidth, self.settings):
+        if self.IsOverlapped(person, detectedPeople, self.settings.crossingIou) or not IsCleanView(person, imageWidth, self.settings):
             return NO_EVENT
         viewGroup = FindViewGroup(person, self.settings)
         if viewGroup not in FACING_GROUPS or self.anchorCounts[viewGroup] >= self.settings.enrollViewsPerDirection:
@@ -284,7 +289,7 @@ class LeaderManager:
         self.lastSeenSeconds = nowSeconds
         if gateDistances.get(person.trackId, math.nan) > self.settings.swapGateSigma:
             return self.LoseLeader('jump', nowSeconds)
-        overlapped = self.IsOverlapped(person, detectedPeople)
+        overlapped = self.IsOverlapped(person, detectedPeople, self.settings.crossingIou)
         if returned:
             self.lastStrongMatchSeconds = -math.inf
         if not (returned or overlapped or nowSeconds - self.lastVerifySeconds >= self.settings.verifyPeriod):
@@ -332,13 +337,13 @@ class LeaderManager:
             nearestDistance, _ = self.FindNearestDistance(description, self.negativeStack)
             if not nearestDistance < self.settings.noveltyDistance:
                 self.negativeDescriptions.append(description)
-                self.negativeStack = StackDescriptions(list(self.negativeDescriptions))
+        self.negativeStack = StackDescriptions(list(self.negativeDescriptions))
 
     def LearnIfSureWhoItIs(self, person, detectedPeople, description, distance, nowSeconds, imageWidth):
         recentlyMatched = nowSeconds - self.lastStrongMatchSeconds <= self.settings.trustTime
         if distance < self.settings.reidAccept:
             self.lastStrongMatchSeconds = nowSeconds
-        if not recentlyMatched or self.IsTouched(person, detectedPeople) or not IsCleanView(person, imageWidth, self.settings):
+        if not recentlyMatched or self.IsOverlapped(person, detectedPeople, 0.0) or not IsCleanView(person, imageWidth, self.settings):
             return
         viewGroup = FindViewGroup(person, self.settings)
         if viewGroup != UNKNOWN_GROUP:
@@ -373,7 +378,7 @@ class LeaderManager:
         gatedPeople = []
         ungatedPeople = []
         for person in detectedPeople:
-            if self.IsOverlapped(person, detectedPeople) or not IsCleanView(person, imageWidth, self.settings):
+            if self.IsOverlapped(person, detectedPeople, self.settings.crossingIou) or not IsCleanView(person, imageWidth, self.settings):
                 continue
             gateDistance = gateDistances.get(person.trackId, math.nan) if self.state == SEARCHING_STATE else math.nan
             if gateDistance <= self.settings.motionGateSigma:
@@ -427,21 +432,19 @@ class LeaderManager:
         return FOUND_EVENT
 
     def RankCandidate(self, person, nowSeconds):
-        distanceSeconds = self.distanceSecondsByTrackId.get(person.trackId)
-        promising = (distanceSeconds is not None and self.distanceByTrackId[person.trackId] < self.settings.reidAccept
-                     and nowSeconds - distanceSeconds < self.settings.competitorAge)
-        comparedSeconds = -math.inf if distanceSeconds is None else distanceSeconds
-        return (not promising, comparedSeconds, -CalculateArea(person))
+        comparison = self.recentComparisons.get(person.trackId, UNKNOWN_COMPARISON)
+        promising = (comparison.distance < self.settings.reidAccept
+                     and nowSeconds - comparison.seconds < self.settings.competitorAge)
+        return (not promising, comparison.seconds, -CalculateArea(person))
 
     def RecordSearchWins(self, distances, negativeDistances, acceptDistances, visibleTrackIds, nowSeconds):
         self.winHistories = {trackId: winHistory for trackId, winHistory in self.winHistories.items()
                              if trackId in visibleTrackIds}
         bestLead = math.nan
         for trackId, distance in distances.items():
-            competitorDistances = [self.distanceByTrackId[otherTrackId] for otherTrackId in self.distanceByTrackId
+            competitorDistances = [comparison.distance for otherTrackId, comparison in self.recentComparisons.items()
                                    if otherTrackId != trackId and otherTrackId in visibleTrackIds
-                                   and nowSeconds - self.distanceSecondsByTrackId[otherTrackId]
-                                   < self.settings.competitorAge]
+                                   and nowSeconds - comparison.seconds < self.settings.competitorAge]
             nearestOther = min([competitorDistance for competitorDistance in competitorDistances
                                 if not math.isnan(competitorDistance)] + [negativeDistances[trackId]], default=math.inf)
             leadOverOthers = nearestOther - distance
@@ -457,7 +460,7 @@ class LeaderManager:
         return self.settings.reidAccept
 
     def FindLeadOverOthers(self, leaderTrackId, distance, description, detectedPeople, nowSeconds):
-        otherDistances = [self.GetRecentDistance(person.trackId, nowSeconds) for person in detectedPeople
+        otherDistances = [self.GetRecentComparison(person.trackId, nowSeconds).distance for person in detectedPeople
                           if person.trackId != leaderTrackId]
         nearestOther = min([otherDistance for otherDistance in otherDistances if not math.isnan(otherDistance)]
                            + [self.FindNegativeDistance(description)], default=math.inf)
@@ -489,20 +492,20 @@ class LeaderManager:
         return math.inf if math.isnan(negativeDistance) else negativeDistance
 
     def RememberDistance(self, trackId, distance, sharedArea, nowSeconds):
-        self.distanceByTrackId[trackId] = distance
-        self.sharedAreaByTrackId[trackId] = sharedArea
-        self.distanceSecondsByTrackId[trackId] = nowSeconds
+        self.recentComparisons[trackId] = RecentComparison(distance, sharedArea, nowSeconds)
+
+    def ForgetOldDistances(self, nowSeconds):
+        keepSeconds = max(self.settings.recentDistanceTime, self.settings.competitorAge)
+        self.recentComparisons = {trackId: comparison for trackId, comparison in self.recentComparisons.items()
+                                  if nowSeconds - comparison.seconds <= keepSeconds}
 
     def RestackViews(self):
         self.viewStack = StackDescriptions([description for descriptions in self.viewDescriptions.values()
                                             for description in descriptions])
 
-    def IsOverlapped(self, person, detectedPeople):
-        return any(other.trackId != person.trackId and CalculateIou(person, other) > self.settings.crossingIou
+    def IsOverlapped(self, person, detectedPeople, minimumIou):
+        return any(other.trackId != person.trackId and CalculateIou(person, other) > minimumIou
                    for other in detectedPeople)
-
-    def IsTouched(self, person, detectedPeople):
-        return any(other.trackId != person.trackId and CalculateIou(person, other) > 0.0 for other in detectedPeople)
 
     def FindPerson(self, detectedPeople, trackId):
         return next((person for person in detectedPeople if person.trackId == trackId), None)

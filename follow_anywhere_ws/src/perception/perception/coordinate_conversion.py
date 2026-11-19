@@ -10,9 +10,8 @@ To include:
   box centre (that often hits the background). Fallback: the middle strip of the box (partly hidden
   person). Ignore 0 / out-of-range depth (depthMin..depthMax); no usable depth, or less than
   minimumValidDepthShare of the sampled pixels usable (person closer than depthMin) -> position_valid = false.
-- Size (width, height) from the box and the depth; uncertainty from the spread of the depth samples.
+- Width from the box and the depth; uncertainty from the spread of the depth samples.
 - Horizontal distance of the leader for the debug frame.
-- Later: depth image -> points for obstacle_mapper's fallback when there is no lidar.
 """
 
 import math
@@ -52,7 +51,6 @@ MEDIAN_DEVIATION_TO_SIGMA = 1.4826
 class PersonPosition:
     position: Point
     width: float
-    height: float
     uncertainty: float
     cameraDepth: float
 
@@ -81,8 +79,7 @@ def PlacePerson(person, depthMeters, cameraModel, opticalToBaseTransform, settin
     opticalPoint.point.z = depth
     basePoint = do_transform_point(opticalPoint, opticalToBaseTransform)
     width = (person.right - person.left) * depth / cameraModel.fx()
-    height = (person.bottom - person.top) * depth / cameraModel.fy()
-    return PersonPosition(basePoint.point, width, height, spread, depth)
+    return PersonPosition(basePoint.point, width, spread, depth)
 
 
 def MeasurePersonDepth(person, depthMeters, settings):

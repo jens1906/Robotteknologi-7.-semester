@@ -3,8 +3,8 @@ import statistics
 from collections import deque
 from dataclasses import dataclass, field
 
-from builtin_interfaces.msg import Time
 from follow_anywhere_interfaces.msg import EvaluationMetrics
+from rclpy.time import Time
 from std_msgs.msg import Header
 
 # Parameter defaults (set in the evaluation_node section of config/perception_params.yaml)
@@ -133,6 +133,9 @@ class RunMetrics:
             self.StartLoss(stampSeconds, secondsSinceSeen)
         if self.leaderState in LOSS_STATES and leaderState == FOLLOWING_STATE:
             self.FinishLoss(stampSeconds)
+        elif self.leaderState in LOSS_STATES and leaderState not in LOSS_STATES and math.isfinite(self.lossStartSeconds):
+            self.lossStartSeconds = NAN
+            self.AddEvent('loss_ended', 'loss ended by a new calibration or a cleared leader, not a recovery')
         self.leaderState = leaderState
         self.previousStateStampSeconds = stampSeconds
 
@@ -217,7 +220,7 @@ class RunMetrics:
         if math.isfinite(self.lossStartSeconds):
             currentLossDuration = self.latestStampSeconds - self.lossStartSeconds
         return EvaluationMetrics(
-            header=Header(stamp=ConvertSecondsToStamp(self.latestStampSeconds), frame_id=BASE_FRAME),
+            header=Header(stamp=Time(seconds=self.latestStampSeconds).to_msg(), frame_id=BASE_FRAME),
             run_time=self.CalculateRunTime(),
             leader_visible=self.leaderVisible,
             leader_distance=self.leaderDistance,
@@ -305,11 +308,6 @@ class RunMetrics:
 
 def ConvertStampToSeconds(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
-
-
-def ConvertSecondsToStamp(seconds):
-    wholeSeconds = math.floor(seconds)
-    return Time(sec=int(wholeSeconds), nanosec=int((seconds - wholeSeconds) * 1e9))
 
 
 def ResolveAnswer(manualAnswer, automaticValue):

@@ -190,11 +190,12 @@ def MatchCameraPoints(cameraPoints, patchMap, transform):
 
 
 def AlignCameraToLidar(cameraPoints, lidarPoints, savedMount, opticalToCameraTransform, settings):
-    finePatchMap = BuildPatchMap(lidarPoints, settings.patchSizes[-1])
     stagePatchMaps = [BuildPatchMap(lidarPoints, patchSize) for patchSize in settings.patchSizes]
+    finePatchMap = stagePatchMaps[-1]
     startQuality = MeasureFit(cameraPoints, finePatchMap, MakeMountTransform(savedMount) @ opticalToCameraTransform)
     searchStarts = SearchStartTransforms(cameraPoints, BuildPatchMap(lidarPoints, SEARCH_PATCH_SIZE), savedMount,
                                          opticalToCameraTransform, settings)
+    aboveLidarViewShare = MeasureAboveLidarViewShare(cameraPoints, searchStarts[0].transform)
     candidateResults = []
     for searchStart in searchStarts[:SEARCH_STARTS_ALIGNED]:
         transform = searchStart.transform
@@ -202,7 +203,7 @@ def AlignCameraToLidar(cameraPoints, lidarPoints, savedMount, opticalToCameraTra
             transform = AlignOnPatches(cameraPoints, stagePatchMap, transform)
         candidateResults.append(RegistrationResult(
             transform, startQuality, MeasureFit(cameraPoints, finePatchMap, transform), searchStarts[0],
-            MeasureAboveLidarViewShare(cameraPoints, searchStarts[0].transform), len(cameraPoints), len(lidarPoints)))
+            aboveLidarViewShare, len(cameraPoints), len(lidarPoints)))
     return max(candidateResults, key=lambda result: (result.quality.matchedPoints, -result.quality.residual))
 
 
