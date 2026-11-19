@@ -48,6 +48,7 @@ CELL_ROWS = 16
 CELL_COLUMNS = 8
 CELL_COUNT = CELL_ROWS * CELL_COLUMNS
 CUDA_PROVIDER = 'CUDAExecutionProvider'
+CUDA_PROVIDER_OPTIONS = {'cudnn_conv_algo_search': 'HEURISTIC'}
 CPU_PROVIDER = 'CPUExecutionProvider'
 NO_CUDA_PROVIDER_WARNING = 'onnxruntime has no CUDA provider (CPU build or no GPU), ReID runs on the CPU'
 
@@ -72,7 +73,7 @@ def SelectExecutionProviders(requestedDevice):
     if requestedDevice not in ('auto', 'cuda'):
         return [CPU_PROVIDER], ''
     if CUDA_PROVIDER in onnxruntime.get_available_providers():
-        return [CUDA_PROVIDER, CPU_PROVIDER], ''
+        return [(CUDA_PROVIDER, CUDA_PROVIDER_OPTIONS), CPU_PROVIDER], ''
     return [CPU_PROVIDER], NO_CUDA_PROVIDER_WARNING
 
 
@@ -83,7 +84,7 @@ class ReidModel:
         sessionOptions = onnxruntime.SessionOptions()
         sessionOptions.intra_op_num_threads = reidThreads
         self.session = onnxruntime.InferenceSession(backbonePath, sessionOptions, providers=executionProviders)
-        if CUDA_PROVIDER in executionProviders and CUDA_PROVIDER not in self.session.get_providers():
+        if executionProviders[0] != CPU_PROVIDER and CUDA_PROVIDER not in self.session.get_providers():
             self.deviceWarning = NO_CUDA_PROVIDER_WARNING
         self.inputName = self.session.get_inputs()[0].name
         osnetHead = np.load(os.path.join(os.path.dirname(backbonePath), OSNET_HEAD_FILE))

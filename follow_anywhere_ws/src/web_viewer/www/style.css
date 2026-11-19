@@ -14,13 +14,10 @@ body { margin: 0; display: flex; height: 100vh; background: var(--bg); color: va
 .ok { color: var(--ok); } .bad { color: var(--bad); }
 #filter { margin: 0 12px 8px; padding: 6px 8px; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 4px; }
-#perception-toggle, #navigation-button { margin: 0 12px 8px; padding: 6px 8px; background: var(--bg); color: var(--text);
+#perception-toggle { margin: 0 12px 8px; padding: 6px 8px; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-left: 3px solid transparent; border-radius: 4px; cursor: pointer; text-align: left; }
-#perception-toggle:hover, #navigation-button:hover:not(:disabled) { background: #222934; }
+#perception-toggle:hover { background: #222934; }
 #perception-toggle.open { border-left-color: var(--accent); }
-#navigation-button.active { border-left-color: var(--ok); }
-#navigation-button.bad { color: var(--bad); }
-#navigation-button:disabled { opacity: 0.5; cursor: default; }
 #topics { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
 #topics li { padding: 5px 12px; cursor: pointer; border-left: 3px solid transparent; }
 #topics li:hover { background: #222934; }
@@ -40,6 +37,12 @@ body { margin: 0; display: flex; height: 100vh; background: var(--bg); color: va
 #record-button:hover:not(:disabled) { border-color: var(--accent); }
 #record-button.active { color: var(--bad); border-color: var(--bad); }
 #record-button:disabled { opacity: 0.5; cursor: default; }
+#navigation-button { padding: 4px 8px; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  border-radius: 4px; cursor: pointer; font-size: 12px; }
+#navigation-button:hover:not(:disabled) { border-color: var(--accent); }
+#navigation-button.active { color: var(--ok); border-color: var(--ok); }
+#navigation-button.bad { color: var(--bad); }
+#navigation-button:disabled { opacity: 0.5; cursor: default; }
 .mark { padding: 4px 8px; background: var(--bg); color: var(--text); border: 1px solid var(--line);
   border-radius: 4px; cursor: pointer; font-size: 12px; }
 .mark:hover:not(:disabled) { border-color: var(--bad); }

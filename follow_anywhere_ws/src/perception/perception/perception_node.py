@@ -84,7 +84,7 @@ from perception.velocity_tracker import (VELOCITY_SETTING_DEFAULTS, BuildMeasure
                                          MakeStillRobotPose, VelocityTracker)
 
 # Parameter defaults (set in config/perception_params.yaml, the leader settings have their defaults in leader_manager.py)
-DETECTOR_MODEL_FILE = 'yolov8n-pose.pt'
+DETECTOR_MODEL_FILE = 'yolo26n-pose.pt'
 DETECTOR_IMAGE_SIZE = 640
 MINIMUM_BOX_SIZE_PIXELS = 24
 TRACKER_CONFIG_FILE = 'botsort.yaml'
@@ -158,7 +158,7 @@ class PerceptionNode(Node):
         self.lastKnownLeaderPoint = None
         self.robotPose = MakeStillRobotPose()
         self.lastOdometrySeconds = None
-        self.lastOdometryArrivalSeconds = None
+        self.odometrySilent = False
         self.odometryRestarted = False
         self.velocityTracker = VelocityTracker(self.velocitySettings)
         self.clockOffsetEstimator = ClockOffsetEstimator(self.velocitySettings.clockOffsetWindow)
@@ -248,14 +248,14 @@ class PerceptionNode(Node):
 
     def HandleRobotOdometry(self, odometryMessage):
         arrivalSeconds = self.get_clock().now().nanoseconds * 1e-9
-        if self.lastOdometryArrivalSeconds is None:
+        if self.lastOdometrySeconds is None:
             self.get_logger().info('RobotOdometry: odometry started, velocities are now over the ground')
             self.odometryRestarted = True
-        elif arrivalSeconds - self.lastOdometryArrivalSeconds > self.velocitySettings.odometryTimeout:
+        elif self.odometrySilent:
             self.PublishDebugMessage('RobotOdometry', 'odometry back, velocity filters restarted')
             self.clockOffsetEstimator.Reset()
             self.odometryRestarted = True
-        self.lastOdometryArrivalSeconds = arrivalSeconds
+        self.odometrySilent = False
         correctedSeconds = self.clockOffsetEstimator.CorrectStamp(
             ConvertStampToSeconds(odometryMessage.header.stamp), arrivalSeconds)
         odometryTransform = TransformStamped()
@@ -389,6 +389,7 @@ class PerceptionNode(Node):
         except tf2_ros.TransformException:
             odometryTransform = self.transformBuffer.lookup_transform(ODOMETRY_FRAME, BASE_FRAME, Time())
         if silentSeconds > self.velocitySettings.odometryTimeout:
+            self.odometrySilent = True
             self.PublishDebugMessage('RobotOdometry', 'no /utlidar/robot_odom, robot motion uncertain')
         robotTranslation = odometryTransform.transform.translation
         robotPose = MakeRobotPose(robotTranslation.x, robotTranslation.y,

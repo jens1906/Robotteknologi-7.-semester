@@ -242,10 +242,13 @@ public:
       "default_topics",
       {"/camera/camera/color/image_raw", "/utlidar/cloud_base", "/sportmodestate"});
     bag_directory_ = declare_parameter<std::string>("bag_directory", WEB_VIEWER_BAG_DIR);
-    exclude_regex_ = declare_parameter<std::string>(
-      "record_exclude_regex",
-      "^(?!/camera/camera/(color|aligned_depth_to_color)/image_raw$).*/image_raw$|"
-      ".*/image_rect_raw$|.*/theora$|.*/zstd$|^/config_change_status$");
+    record_regex_ = declare_parameter<std::string>(
+      "record_regex",
+      "^/camera/camera/color/image_raw/compressed$|"
+      "^/camera/camera/aligned_depth_to_color/image_raw/compressedDepth$|"
+      "^/camera/camera/(color|aligned_depth_to_color)/camera_info$|"
+      "^/perception/.*|^/evaluation/.*|^/utlidar/(robot_odom|cloud_base)$|^/sportmodestate$|"
+      "^/tf_static$|^/rosout$|^/api/sport/request$|^/web_viewer/debug$");
 
     if (www.empty()) {
       www = (ament_index_cpp::get_package_share_path("web_viewer") / "www").string();
@@ -481,8 +484,8 @@ private:
       auto path = free_path(bag_directory_, std::string("recording_") + stamp);
 
       pid_t pid;
-      int err = spawn_process_group({"ros2", "bag", "record", "-a", "-o", path.string(),
-          "--exclude-regex", exclude_regex_, "--disable-keyboard-controls"}, pid);
+      int err = spawn_process_group({"ros2", "bag", "record", "-o", path.string(),
+          "--regex", record_regex_, "--disable-keyboard-controls"}, pid);
 
       if (err != 0) {
         error = std::string("cannot start ros2 bag record: ") + std::strerror(err);
@@ -993,7 +996,7 @@ private:
   rclcpp::Client<follow_anywhere_interfaces::srv::EvaluationMarkEvent>::SharedPtr mark_event_client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr debug_pub_;
 
-  std::string bag_directory_, exclude_regex_;
+  std::string bag_directory_, record_regex_;
   std::mutex record_mtx_;
   std::string record_state_ = "idle";
   std::string record_name_, record_title_, record_stamp_, record_error_;

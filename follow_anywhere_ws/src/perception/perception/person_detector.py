@@ -1,7 +1,7 @@
 """Finds people in the colour image and keeps their ids from frame to frame. Plain python, no ROS.
 
 To include:
-- YOLO pose model (yolov8n-pose.pt) + BoT-SORT (config/botsort.yaml) through ultralytics `track`.
+- YOLO pose model (yolo26n-pose.pt) + BoT-SORT (config/botsort.yaml) through ultralytics `track`.
 - Returns per person: tracker id, box (pixels), confidence, 17 COCO keypoints (x, y, confidence).
 - Ignore boxes smaller than detector_min_box.
 - imgsz 640 for the RealSense (its own resolution).
@@ -21,7 +21,7 @@ import torch
 from ultralytics import YOLO
 
 # Parameter defaults (set in config/perception_params.yaml)
-DETECTOR_MODEL_PATH = 'yolov8n-pose.pt'
+DETECTOR_MODEL_PATH = 'yolo26n-pose.pt'
 TRACKER_CONFIG_PATH = 'botsort.yaml'
 DETECTOR_IMAGE_SIZE = 640
 MINIMUM_BOX_SIZE_PIXELS = 24

@@ -1,7 +1,7 @@
 """Start perception: RealSense driver, the camera's mounting TF and the perception node.
 
     ros2 launch perception perception.launch.py
-    ros2 launch perception perception.launch.py startCamera:=false     # replaying a rosbag (bag has no TF)
+    ros2 launch perception perception.launch.py startCamera:=false     # replaying a rosbag (no TF; JPEG/PNG images decompressed)
     ros2 launch perception perception.launch.py startCamera:=false useSimTime:=true   # bag played with --clock
     ros2 launch perception perception.launch.py depthCloud:=true   # + a point cloud rebuilt from the aligned depth
 
@@ -64,6 +64,7 @@ def generate_launch_description():
             'align_depth.enable': 'true',
             'rgb_camera.color_profile': '640x480x30',
             'depth_module.depth_profile': '640x480x30',
+            'config_file': os.path.join(share, 'config', 'realsense_params.yaml'),
         }.items(),
         condition=IfCondition(LaunchConfiguration('startCamera')))
 
@@ -88,8 +89,26 @@ def generate_launch_description():
         parameters=[{'use_sim_time': LaunchConfiguration('useSimTime')}],
         condition=IfCondition(LaunchConfiguration('depthCloud')))
 
+    # replaying a bag: the bags hold JPEG colour and PNG depth, turned back into the raw topics perception reads
+    # (a bag with raw images has no compressed topics, then these stay silent)
+    color_republish = Node(
+        package='image_transport', executable='republish', name='color_republish',
+        parameters=[{'in_transport': 'compressed', 'out_transport': 'raw',
+                     'use_sim_time': LaunchConfiguration('useSimTime')}],
+        remappings=[('in/compressed', '/camera/camera/color/image_raw/compressed'),
+                    ('out', '/camera/camera/color/image_raw')],
+        condition=UnlessCondition(LaunchConfiguration('startCamera')))
+    depth_republish = Node(
+        package='image_transport', executable='republish', name='depth_republish',
+        parameters=[{'in_transport': 'compressedDepth', 'out_transport': 'raw',
+                     'use_sim_time': LaunchConfiguration('useSimTime')}],
+        remappings=[('in/compressedDepth', '/camera/camera/aligned_depth_to_color/image_raw/compressedDepth'),
+                    ('out', '/camera/camera/aligned_depth_to_color/image_raw')],
+        condition=UnlessCondition(LaunchConfiguration('startCamera')))
+
     perception = Node(
         package='perception', executable='perception_node', name='perception_node', output='screen',
         parameters=[LaunchConfiguration('paramsFile'), {'use_sim_time': LaunchConfiguration('useSimTime')}])
 
-    return LaunchDescription([*args, realsense, camera_mount, camera_optical, depth_cloud, perception])
+    return LaunchDescription([*args, realsense, camera_mount, camera_optical, depth_cloud, color_republish,
+                              depth_republish, perception])

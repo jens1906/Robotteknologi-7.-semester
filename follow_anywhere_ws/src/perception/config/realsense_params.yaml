@@ -1,0 +1,4 @@
+# Settings of the RealSense driver's image_transport plugins (used by the bags). Loaded by launch/perception.launch.py
+# through rs_launch.py's config_file. Names: <topic without the node's namespace, '/' -> '.'>.<transport>.<setting>.
+.camera.color.image_raw.compressed.jpeg_quality: 90                    # MEASURED: 90 KB/frame, PSNR 38 dB on the 1119 bags
+.camera.aligned_depth_to_color.image_raw.compressedDepth.png_level: 1  # MEASURED: lossless, 219 KB, ~10 ms/frame on the laptop (default 9: ~300 ms)

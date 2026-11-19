@@ -62,7 +62,7 @@ from perception.reid_model import PersonDescription, StackDescriptions
 # Parameter defaults (set in config/perception_params.yaml, the origin of each value is written there)
 LEADER_SETTING_DEFAULTS = {
     'reidAccept': 0.45,
-    'gatedAccept': 0.5,
+    'gatedAccept': 0.7,
     'reidDrop': 0.82,
     'reidMargin': 0.05,
     'reidConfirm': 3,

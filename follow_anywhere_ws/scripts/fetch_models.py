@@ -13,7 +13,7 @@ from ultralytics.utils.downloads import attempt_download_asset
 # Models
 MODELS_FOLDER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                              'src', 'perception', 'resource', 'models')
-YOLO_MODEL_FILE = 'yolov8n-pose.pt'
+YOLO_MODEL_FILE = 'yolo26n-pose.pt'
 OSNET_ARCHIVE_URL = ('https://qaihub-public-assets.s3.us-west-2.amazonaws.com/qai-hub-models/models/'
                      'osnet/releases/v0.64.0/osnet-onnx-float.zip')
 OSNET_FILES = ('osnet.onnx', 'osnet.data')
