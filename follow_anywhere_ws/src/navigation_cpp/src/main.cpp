@@ -332,10 +332,9 @@ public:
       return static_cast<OSQPInt>(l.size() - 1);
     };
 
-    const Eigen::Vector2d Q = Eigen::Vector2d(8.0, 0.25);
-    const Eigen::Vector3d R = Eigen::Vector3d(5.0, 5.0, 1.0);
-    const Eigen::Vector3d S =
-        Eigen::Vector3d(4.0, 4.0, 0.5); // Δu weights: vx, vy, wz
+    const Eigen::Vector2d Q = Eigen::Vector2d(8.0, 0.5);
+    const Eigen::Vector3d R = Eigen::Vector3d(4.0, 4.0, 1.0);
+    const Eigen::Vector3d S = Eigen::Vector3d(4.0, 4.0, 0.5);
 
     Eigen::Vector3d u_prev = Eigen::Vector3d::Zero();
     if (last_path_valid)
