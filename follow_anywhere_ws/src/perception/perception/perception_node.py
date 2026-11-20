@@ -100,7 +100,7 @@ CENTER_PERSON_TRACK_ID = -1
 # Depth and coordinates
 BASE_FRAME = 'base_link'
 DEPTH_BUFFER_SIZE = 10
-DEPTH_MATCH_TOLERANCE_SECONDS = 0.1
+DEPTH_MATCH_TOLERANCE_SECONDS = 0.05
 
 # Robot odometry
 ODOMETRY_FRAME = 'odom'
@@ -156,6 +156,7 @@ class PerceptionNode(Node):
         self.cameraPosition = Point()
         self.lastLeaderPosition = None
         self.lastKnownLeaderPoint = None
+        self.leaderRadius = None
         self.robotPose = MakeStillRobotPose()
         self.lastOdometrySeconds = None
         self.odometrySilent = False
@@ -196,7 +197,7 @@ class PerceptionNode(Node):
         newestMessageQos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT, depth=1)
         self.create_subscription(Odometry, '/utlidar/robot_odom', self.HandleRobotOdometry, newestMessageQos)
         self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.HandleDepthImage,
-                                 newestMessageQos)
+                                 QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=1))
         self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.HandleCameraInfo, newestMessageQos)
         self.create_subscription(Image, '/camera/camera/color/image_raw', self.HandleColorImage, newestMessageQos)
 
@@ -231,7 +232,9 @@ class PerceptionNode(Node):
             leaderClosestPoint = FindClosestPointToRobot(leaderCircle)
             self.RememberLeaderPosition(leaderPosition, leaderClosestPoint)
         header = Header(stamp=colorImageMessage.header.stamp, frame_id=BASE_FRAME)
-        self.leaderPublisher.publish(self.BuildLeaderMessage(leaderClosestPoint, leaderEstimate, imageSeconds, header))
+        leaderMessage = self.BuildLeaderMessage(leaderClosestPoint, leaderEstimate, imageSeconds, header)
+        if leaderMessage.status != PerceptionLeader.VISIBLE or leaderClosestPoint is not None:
+            self.leaderPublisher.publish(leaderMessage)
         self.obstaclesPublisher.publish(
             self.BuildObstaclesMessage(detectedPeople, peopleEstimates, peopleCircles, leaderClosestPoint, header))
         self.debugFramePublisher.publish(self.BuildDebugFrameMessage(
@@ -444,9 +447,11 @@ class PerceptionNode(Node):
         if leaderEstimate is None:
             return peopleEstimates, peopleCircles, None, None
         leaderEstimate = ConvertEstimateToBase(self.robotPose, leaderEstimate)
-        leaderCircle = None
         if leaderMeasurement is not None:
-            leaderCircle = PersonCircle(leaderEstimate.positionX, leaderEstimate.positionY, measuredRadii[leaderTrackId])
+            self.leaderRadius = measuredRadii[leaderTrackId]
+        leaderCircle = None
+        if leaderTrackId != NO_TRACK_ID and self.leaderRadius is not None:
+            leaderCircle = PersonCircle(leaderEstimate.positionX, leaderEstimate.positionY, self.leaderRadius)
         return peopleEstimates, peopleCircles, leaderEstimate, leaderCircle
 
     def FindLeaderMeasurement(self, detectedPeople, peopleMeasurements, leaderTrackId):
@@ -461,7 +466,8 @@ class PerceptionNode(Node):
         return leaderMeasurement
 
     def RememberLeaderPosition(self, leaderPosition, leaderClosestPoint):
-        self.lastLeaderPosition = leaderPosition.position
+        if leaderPosition is not None:
+            self.lastLeaderPosition = leaderPosition.position
         self.lastKnownLeaderPoint = MakeFloorPoint(*ConvertPointToOdom(self.robotPose, leaderClosestPoint.x,
                                                                        leaderClosestPoint.y))
 
@@ -474,6 +480,7 @@ class PerceptionNode(Node):
     def ForgetLeaderPosition(self):
         self.lastLeaderPosition = None
         self.lastKnownLeaderPoint = None
+        self.leaderRadius = None
         self.velocityTracker.ResetLeader()
 
     def BuildLeaderMessage(self, leaderClosestPoint, leaderEstimate, imageSeconds, header):
