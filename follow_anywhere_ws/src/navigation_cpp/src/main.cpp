@@ -345,7 +345,7 @@ public:
     double t = 0.0;
 
     double hard_margin = 0.3;
-    double soft_margin = 0.7;
+    double soft_margin = 0.5;
     double leader_margin = 1.5;
     double margin_cost = 20.0;
     double margin_cost_linear = 5.0;
@@ -560,7 +560,10 @@ public:
             obs_dir = Eigen::Vector2d::UnitX();
 
           double obs_margin =
-              obs.pos_std + std::min(obs.vel_std * t_pred, max_vel_margin);
+              obs.pos_std +
+              (obs.vel.isZero()
+                   ? 0.0
+                   : std::min(obs.vel_std * t_pred, max_vel_margin));
 
           int row_idx = add_row(soft_margin + obs_margin - obs_dir.dot(obs_mov),
                                 OSQP_INFTY);

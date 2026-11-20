@@ -19,6 +19,8 @@ lidar_obstacles:
     floorInlierBand: 0.04       # MEASURED: ~2 sigma of the floor residual
     floorMinimumPoints: 50      # GUESS: inliers needed to accept a plane
     groundHeight: 0.10          # MEASURED: m above the plane that counts as floor (99 % of the floor is within 8.6 cm)
+    nearBodyRange: 0.5          # MEASURED (bag_1120_0800): m, within this the own feet are seen ...
+    nearBodyGroundHeight: 0.25  # MEASURED (bag_1120_0800): ... up to 0.25 m above the floor, so that counts as floor here
     maxHeight: 1.9              # GUESS: m above the floor; higher (ceilings, overhangs) is ignored
     bodyBoxMin: [-0.45, -0.2]   # COPIED from the Gazebo lidar emulator: base_link box of the robot itself
     bodyBoxMax: [0.45, 0.2]

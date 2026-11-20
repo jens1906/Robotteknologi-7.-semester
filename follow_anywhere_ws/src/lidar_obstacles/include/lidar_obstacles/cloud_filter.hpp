@@ -81,6 +81,8 @@ struct FilterParams
   int floorIterations = 100;
   int floorMinimumPoints = 50;      // inliers needed to accept a plane
   double groundHeight = 0.10;       // m above the floor plane that still counts as floor
+  double nearBodyRange = 0.5;
+  double nearBodyGroundHeight = 0.25;
   double maxHeight = 1.9;           // m above the floor plane; higher points are ignored
   Point2 bodyMin{-0.45, -0.2};      // base_link box of the robot's own body
   Point2 bodyMax{0.45, 0.2};

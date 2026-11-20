@@ -164,6 +164,30 @@ FusionOutput Fusion::Fuse(const FusionInput & input, const std::vector<Cluster> 
     leaderMatchSeconds = cloudSeconds;
   }
 
+  auto FindHeldLeaderCluster = [&]() {
+      if (leaderTrackId < 0 || cloudSeconds - leaderMatchSeconds > params.leaderHoldTime) {
+        return -1;
+      }
+      for (std::size_t clusterIndex = 0; clusterIndex < clusters.size(); ++clusterIndex) {
+        if (clusters[clusterIndex].trackId == leaderTrackId && output.clusterOwner[clusterIndex] == OWNER_NONE) {
+          return static_cast<int>(clusterIndex);
+        }
+      }
+      return -1;
+    };
+
+  if (leader.status == LEADER_VISIBLE && !IsFinite(leader.closest)) {
+    const int heldClusterIndex = FindHeldLeaderCluster();
+    if (heldClusterIndex >= 0) {
+      const Cluster & cluster = clusters[static_cast<std::size_t>(heldClusterIndex)];
+      output.clusterOwner[static_cast<std::size_t>(heldClusterIndex)] = OWNER_LEADER;
+      leader.closest = cluster.closest;
+      leader.positionSigma = CalculateClusterSigma(cluster);
+      leader.velocity = cluster.velocity;
+      leader.velocitySigma = cluster.velocitySigma;
+    }
+  }
+
   if (leader.status == LEADER_VISIBLE) {
     // last_known_point = this frame's point (the camera's own when there was no depth this frame).
     // It is stored in odom so it stays on the same floor spot while the robot moves.
@@ -177,18 +201,13 @@ FusionOutput Fusion::Fuse(const FusionInput & input, const std::vector<Cluster> 
     // Hold: the leader's last cluster, while still tracked and not taken by a camera person.
     // The camera lost the leader, but the lidar may still track the same object: for up to leaderHoldTime the
     // leader's last point follows that cluster, and the cluster is not reported as an obstacle.
-    if (leaderTrackId >= 0 && cloudSeconds - leaderMatchSeconds <= params.leaderHoldTime) {
-      for (std::size_t clusterIndex = 0; clusterIndex < clusters.size(); ++clusterIndex) {
-        const Cluster & cluster = clusters[clusterIndex];
-        if (cluster.trackId != leaderTrackId || output.clusterOwner[clusterIndex] != OWNER_NONE) {
-          continue;
-        }
-        output.clusterOwner[clusterIndex] = OWNER_LEADER;
-        leaderPointOdom = robot.ConvertToOdom(cluster.closest);
-        leaderPointSigma = CalculateClusterSigma(cluster);
-        hasLeaderPoint = true;
-        break;
-      }
+    const int heldClusterIndex = FindHeldLeaderCluster();
+    if (heldClusterIndex >= 0) {
+      const Cluster & cluster = clusters[static_cast<std::size_t>(heldClusterIndex)];
+      output.clusterOwner[static_cast<std::size_t>(heldClusterIndex)] = OWNER_LEADER;
+      leaderPointOdom = robot.ConvertToOdom(cluster.closest);
+      leaderPointSigma = CalculateClusterSigma(cluster);
+      hasLeaderPoint = true;
     }
     // While lost, the uncertainty grows with how long the leader has been lost (velocity sigma * time).
     if (hasLeaderPoint) {

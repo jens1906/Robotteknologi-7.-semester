@@ -249,8 +249,11 @@ std::vector<Point2> FilterCloud(const std::vector<Point3> & cloud, const FilterP
       continue;
     }
     // Drop the floor (at most groundHeight above the plane) and anything above maxHeight (ceiling, lamps).
+    const double horizontalDistance = std::hypot(point.x, point.y);
+    const double floorHeight =
+      horizontalDistance < params.nearBodyRange ? params.nearBodyGroundHeight : params.groundHeight;
     const double heightAboveFloor = plane.CalculateHeightAbove(point);
-    if (heightAboveFloor <= params.groundHeight || heightAboveFloor > params.maxHeight) {
+    if (heightAboveFloor <= floorHeight || heightAboveFloor > params.maxHeight) {
       continue;
     }
     // Drop the robot's own body.
@@ -258,7 +261,6 @@ std::vector<Point2> FilterCloud(const std::vector<Point3> & cloud, const FilterP
       continue;
     }
     // Drop points too close (noise next to the sensor) or too far (sparse and not relevant).
-    const double horizontalDistance = std::hypot(point.x, point.y);
     if (horizontalDistance < params.rangeMin || horizontalDistance > params.rangeMax) {
       continue;
     }

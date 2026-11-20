@@ -58,6 +58,22 @@ TEST(CloudFilter, RemovesFloorBodyAndFarPoints)
   EXPECT_DOUBLE_EQ(out[0].y, 0.5);
 }
 
+TEST(CloudFilter, LowPointsNextToTheBodyAreFeet)
+{
+  FilterParams p;
+  GroundPlane flat;
+  flat.heightAtOrigin = -0.38;
+  std::vector<Point3> cloud = {
+    {0.3, -0.3, -0.23},
+    {0.3, -0.3, 0.02},
+    {1.0, 0.0, -0.23},
+  };
+  const auto out = FilterCloud(cloud, p, flat);
+  ASSERT_EQ(out.size(), 2u);
+  EXPECT_DOUBLE_EQ(out[0].x, 0.3);
+  EXPECT_DOUBLE_EQ(out[1].x, 1.0);
+}
+
 // A floor tilted 3 deg (body pitched) with 2 cm noise out to 6 m, and a 0.5 m box standing on it at 4 m.
 // Checks the floor plane fit (GroundEstimator): the tilt and height are found, the tilted floor is removed
 // everywhere and the box points are kept.
@@ -286,6 +302,27 @@ TEST(Fusion, LostLeaderHoldsItsClusterAndKeepsPointInPlace)
   const Pose2 moved{1.0, 0.0, 0.0};
   const auto later = fusion.Fuse(in, {}, moved, 2.0);
   EXPECT_NEAR(later.leader.lastKnown.x, 1.8, 1e-6);
+}
+
+TEST(Fusion, VisibleLeaderWithoutDepthTakesItsCluster)
+{
+  Fusion fusion;
+  FusionInput in;
+  in.hasCamera = true;
+  in.leader.status = LEADER_VISIBLE;
+  in.leader.closest = {2.8, 0.0};
+  in.leader.positionSigma = 0.2;
+  auto clusters = clustersOf(blob(3.0, 0.0));
+  fusion.Fuse(in, clusters, Pose2{}, 0.0);
+
+  in.leader.closest = MakeNotANumberPoint();
+  const auto noDepth = fusion.Fuse(in, clusters, Pose2{}, 0.1);
+  EXPECT_NEAR(noDepth.leader.closest.x, 2.8, 1e-6);
+  EXPECT_EQ(noDepth.clusterOwner[0], OWNER_LEADER);
+  EXPECT_TRUE(noDepth.obstacles.empty());
+
+  const auto afterHold = fusion.Fuse(in, clusters, Pose2{}, 2.0);
+  EXPECT_FALSE(IsFinite(afterHold.leader.closest));
 }
 
 // Checks that clustering odom points with a robot pose returns the clusters in base_link.

@@ -323,6 +323,8 @@ public:
     DeclareParameter("floorInlierBand", filterParams.floorInlierBand);
     DeclareParameter("floorMinimumPoints", filterParams.floorMinimumPoints);
     DeclareParameter("groundHeight", filterParams.groundHeight);
+    DeclareParameter("nearBodyRange", filterParams.nearBodyRange);
+    DeclareParameter("nearBodyGroundHeight", filterParams.nearBodyGroundHeight);
     DeclareParameter("maxHeight", filterParams.maxHeight);
     DeclareParameter("bodyBoxMin", filterParams.bodyMin.x, filterParams.bodyMin.y);
     DeclareParameter("bodyBoxMax", filterParams.bodyMax.x, filterParams.bodyMax.y);
