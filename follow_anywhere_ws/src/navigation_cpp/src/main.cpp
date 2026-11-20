@@ -334,7 +334,7 @@ public:
 
     const Eigen::Vector2d Q = Eigen::Vector2d(8.0, 0.5);
     const Eigen::Vector3d R = Eigen::Vector3d(8.0, 8.0, 1.0);
-    const Eigen::Vector3d S = Eigen::Vector3d(8.0, 8.0, 0.5);
+    const Eigen::Vector3d S = Eigen::Vector3d(16.0, 16.0, 0.5);
 
     Eigen::Vector3d u_prev = Eigen::Vector3d::Zero();
     if (last_path_valid)
