@@ -12,7 +12,6 @@ To include:
   minimumValidDepthShare of the sampled pixels usable (person closer than depthMin) -> position_valid = false.
 - Size (width, height) from the box and the depth; uncertainty from the spread of the depth samples.
 - Horizontal distance of the leader for the debug frame.
-- Later: depth image -> points for obstacle_mapper's fallback when there is no lidar.
 """
 
 import math

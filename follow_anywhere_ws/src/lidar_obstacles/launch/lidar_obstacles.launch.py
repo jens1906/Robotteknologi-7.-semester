@@ -1,9 +1,8 @@
-"""Start the lidar obstacles node.
+"""Start lidar_obstacles_node alone (perception_node must publish on /perception/camera/*, see perception_fused.launch.py).
 
     ros2 launch lidar_obstacles lidar_obstacles.launch.py
-    ros2 launch lidar_obstacles lidar_obstacles.launch.py useSimTime:=true
-
-Topic names are written in lidar_obstacles_node.cpp: remap them in this file.
+    ros2 launch lidar_obstacles lidar_obstacles.launch.py useSimTime:=true          # bag played with --clock
+    ros2 launch lidar_obstacles lidar_obstacles.launch.py paramsFile:=/path/to.yaml
 """
 import os
 
@@ -15,17 +14,14 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    # Folder where this package's config files are installed.
     share = get_package_share_directory('lidar_obstacles')
-    args = [
-        DeclareLaunchArgument('paramsFile',
-                              default_value=os.path.join(share, 'config', 'lidar_obstacles_params.yaml'),
-                              description='lidar obstacles node parameters'),
-        DeclareLaunchArgument('useSimTime', default_value='false',
-                              description='use /clock from the sim or a rosbag played with --clock'),
-    ]
-
-    lidarObstacles = Node(
-        package='lidar_obstacles', executable='lidar_obstacles_node', name='lidar_obstacles_node', output='screen',
-        parameters=[LaunchConfiguration('paramsFile'), {'use_sim_time': LaunchConfiguration('useSimTime')}])
-
-    return LaunchDescription([*args, lidarObstacles])
+    # Two launch arguments (paramsFile:=..., useSimTime:=true) and the node itself, which loads the parameter
+    # file and sets use_sim_time (true when a rosbag is played with --clock).
+    return LaunchDescription([
+        DeclareLaunchArgument('paramsFile', default_value=os.path.join(share, 'config', 'lidar_obstacles_params.yaml'),
+                              description='lidar_obstacles parameters'),
+        DeclareLaunchArgument('useSimTime', default_value='false', description='use /clock'),
+        Node(package='lidar_obstacles', executable='lidar_obstacles_node', name='lidar_obstacles', output='screen',
+             parameters=[LaunchConfiguration('paramsFile'), {'use_sim_time': LaunchConfiguration('useSimTime')}]),
+    ])

@@ -1,11 +1,11 @@
-"""Full perception: the camera part (perception package) + the lidar part and fusion (tmp_lidar).
+"""Full perception: the camera part (perception package) + the lidar part and fusion (lidar_obstacles).
 
 perception_node's /perception/leader and /perception/obstacles are remapped to /perception/camera/*;
-tmp_lidar_node publishes the fused /perception/leader, /perception/obstacles_static (lidar only),
+lidar_obstacles_node publishes the fused /perception/leader, /perception/obstacles_static (lidar only),
 /perception/obstacles_combined (lidar + camera people) and /perception/scan. Every argument of perception.launch.py is passed through.
 
-    ros2 launch tmp_lidar perception_fused.launch.py
-    ros2 launch tmp_lidar perception_fused.launch.py startCamera:=false useSimTime:=true   # rosbag with --clock
+    ros2 launch lidar_obstacles perception_fused.launch.py
+    ros2 launch lidar_obstacles perception_fused.launch.py startCamera:=false useSimTime:=true   # rosbag with --clock
 """
 import os
 
@@ -18,9 +18,13 @@ from launch_ros.actions import Node, SetRemap
 
 
 def generate_launch_description():
-    share = get_package_share_directory('tmp_lidar')
+    # Folder where this package's config files are installed, and the useSimTime launch argument.
+    share = get_package_share_directory('lidar_obstacles')
     use_sim_time = LaunchConfiguration('useSimTime')
 
+    # Camera part: perception's own launch file, with its two outputs renamed to /perception/camera/*.
+    # The remaps only apply inside this group, so the lidar node below can publish the fused result on the
+    # original names (/perception/leader, /perception/obstacles_*) that navigation reads.
     camera_part = GroupAction([
         SetRemap(src='/perception/leader', dst='/perception/camera/leader'),
         SetRemap(src='/perception/obstacles', dst='/perception/camera/obstacles'),
@@ -28,13 +32,15 @@ def generate_launch_description():
             get_package_share_directory('perception'), 'launch', 'perception.launch.py'))),
     ])
 
+    # Lidar part: lidar_obstacles_node with its parameter file and use_sim_time.
     lidar_part = Node(
-        package='tmp_lidar', executable='tmp_lidar_node', name='tmp_lidar', output='screen',
+        package='lidar_obstacles', executable='lidar_obstacles_node', name='lidar_obstacles', output='screen',
         parameters=[LaunchConfiguration('lidarParamsFile'), {'use_sim_time': use_sim_time}])
 
+    # Launch arguments (lidarParamsFile:=..., useSimTime:=true), then both parts.
     return LaunchDescription([
-        DeclareLaunchArgument('lidarParamsFile', default_value=os.path.join(share, 'config', 'tmp_lidar.yaml'),
-                              description='tmp_lidar parameters'),
+        DeclareLaunchArgument('lidarParamsFile', default_value=os.path.join(share, 'config', 'lidar_obstacles_params.yaml'),
+                              description='lidar_obstacles parameters'),
         DeclareLaunchArgument('useSimTime', default_value='false', description='use /clock'),
         camera_part,
         lidar_part,

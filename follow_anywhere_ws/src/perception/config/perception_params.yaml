@@ -5,9 +5,6 @@ perception_node:
   ros__parameters:
     baseFrame: base_link
 
-    # --- switches -------------------------------------------------------------------------------
-    useLidar: true           # lidar for static obstacles; falls back to the depth image when no cloud arrives
-
     # --- person detector + tracker --------------------------------------------------------------
     detectorModelFile: yolo26n-pose.pt       # in resource/models/ (scripts/fetch_models.py); pose model: keypoints for depth sampling. On the Orin: yolo26n-pose.engine (TensorRT FP16, made there by fetch_models.py --engine)
     detectorImageSize: 640                   # the camera's own resolution; 960 was ~2x slower on CPU
