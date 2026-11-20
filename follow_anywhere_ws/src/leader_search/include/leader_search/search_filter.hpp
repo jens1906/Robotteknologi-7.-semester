@@ -30,7 +30,9 @@ struct Params {
   float window_radius = 15.0f; // [m] round window around the robot; 0 = square of window_cells
   int32_t window_cells = 20;   // W of the square window (window_radius = 0)
   float resolution = 0.5f;     // r [m]
-  float t_grace = 0.3f;        // [s] without a re-ID match before SEARCH
+  float t_grace = 0.3f;        // [s] without a re-ID match before SEARCH (perception's lost_duration)
+  int32_t n_grace = 2;         // and at least this many unmatched frames in a row (slow cameras)
+  float t_silent = 1.0f;       // [s] without any camera frame before SEARCH (perception stalled)
   float s_min = 0.3f;          // [m/s] leader speed clamp
   float s_max = 2.0f;
   float v_stop = 0.15f;        // [m/s] below: leader treated as stopped at loss
@@ -100,6 +102,9 @@ struct Observation {
   bool has_track = false;  // matched with a usable position/velocity
   TrackInit track;         // valid when has_track
   Pose2 robot;             // robot pose in odom at the frame
+  // Unmatched frames: perception's time since its last match (PerceptionLeader.lost_duration).
+  // NaN = unknown; then the filter counts its own ticks instead.
+  float lost_duration = std::numeric_limits<float>::quiet_NaN();
 };
 
 struct PathView {
@@ -107,9 +112,17 @@ struct PathView {
   int32_t size = 0;
 };
 
+enum class LossCause : uint8_t {
+  kNone = 0,
+  kNotMatched,  // camera frames kept coming without a match for t_grace
+  kSilent,      // no camera frame at all for t_silent
+};
+
 struct SearchOutput {
   Mode mode = Mode::TRACKING;
   bool reacquired = false;       // SEARCH/GIVE_UP -> TRACKING this tick
+  LossCause lost = LossCause::kNone;  // TRACKING -> SEARCH this tick, and why
+  float lost_after = 0.0f;       // [s] since the last match when it happened
   bool target_switched = false;  // hysteresis accepted a new candidate this tick
   bool clamped = false;          // loss point was outside the window and clamped (warn)
   bool path_valid = false;
@@ -287,6 +300,8 @@ class SearchFilter {
   float phase_o_ = 0.0f, phase_d_ = 0.0f;  // max-product move phases (orthogonal, diagonal)
   float oow_ = 0.0f, dropped_ = 0.0f, last_total_ = 1.0f;
   float time_since_seen_ = 0.0f, time_since_loss_ = 0.0f;
+  float time_since_frame_ = 0.0f;
+  int32_t misses_ = 0;             // unmatched camera frames since the last match  // since the last camera frame of any kind (TRACKING)
   bool has_track_ = false;
   TrackInit last_track_;
   Vec2 last_seen_;

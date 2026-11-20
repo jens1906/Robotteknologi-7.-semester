@@ -5,6 +5,7 @@ search_eval; everything stops when search_eval has written its result.
 Needs follow_anywhere_ws (leader_search, navigation_cpp) sourced as well as this sim.
 
   ros2 launch go2_sim2d search_eval.launch.py world:=search_side_door seed:=3
+  ros2 launch go2_sim2d search_eval.launch.py world:=search_corridor viewer:=true belief_rate_hz:=10.0
   ros2 run go2_sim2d search_batch --runs 50 --jobs 4     # all scenes, pass-rate table
 """
 
@@ -37,11 +38,15 @@ def generate_launch_description():
         DeclareLaunchArgument('seed', default_value='0'),
         DeclareLaunchArgument('result_file', default_value=''),
         DeclareLaunchArgument('viewer', default_value='false'),
+        DeclareLaunchArgument('belief_rate_hz', default_value='2.0'),
+        DeclareLaunchArgument('perception_rate', default_value='15.0'),
         Node(package='go2_sim2d', executable='sim2d', name='sim2d', output='log',
              parameters=[{'world': world}]),
         Node(package='go2_sim2d', executable='fake_perception', name='fake_perception',
-             output='log', parameters=[perception, {'world': world, 'seed': seed,
-                                                    'leader_always_obstacle': True}]),
+             output='log', parameters=[perception, {
+                 'world': world, 'seed': seed, 'leader_always_obstacle': True,
+                 'rate': ParameterValue(LaunchConfiguration('perception_rate'),
+                                        value_type=float)}]),
         Node(package='go2_sim2d', executable='viewer', name='sim2d_viewer', output='log',
              parameters=[perception, {'world': world}],
              condition=IfCondition(LaunchConfiguration('viewer'))),
@@ -50,7 +55,10 @@ def generate_launch_description():
              output='log',
              remappings=[('/perception/obstacles_combined', '/perception/obstacles')]),
         Node(package='leader_search', executable='leader_search_node', name='leader_search',
-             output='log', parameters=[search_params, {'params_file': search_params}]),
+             output='log', parameters=[search_params, {
+                 'params_file': search_params,
+                 'belief_rate_hz': ParameterValue(LaunchConfiguration('belief_rate_hz'),
+                                                  value_type=float)}]),
         evaluator,
         RegisterEventHandler(OnProcessExit(target_action=evaluator,
                                            on_exit=[EmitEvent(event=Shutdown())])),

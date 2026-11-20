@@ -5,7 +5,9 @@ leader_search:
     window_radius: 15.0    # [m] round search window around the robot (0 = square window_cells)
     window_cells: 20       # W of the square window, used when window_radius is 0
     resolution: 0.5        # r, cell size [m]
-    t_grace: 0.3           # [s] without a re-ID match before SEARCH
+    t_grace: 0.3           # [s] without a re-ID match before SEARCH (perception's lost_duration)
+    n_grace: 2             # and at least this many unmatched frames in a row
+    t_silent: 1.0          # [s] without any /perception/leader message before SEARCH
     s_min: 0.3             # [m/s] leader speed clamp
     s_max: 2.0
     v_stop: 0.15           # [m/s] below: treated as stopped at loss

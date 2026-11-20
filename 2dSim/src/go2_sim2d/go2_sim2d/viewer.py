@@ -5,8 +5,12 @@ from /sim/*; /perception/leader and /perception/obstacles are drawn where percep
 puts them, projected with the robot's true pose, so their error is visible.
 rclpy spins in a background thread; the Qt GUI redraws at `refresh_hz`.
 
+When leader_search runs, its output is drawn on top: belief (red heat map, from
+/search/belief), planned path (/search/path), search target and intercept line
+(/search/markers). Nothing is drawn while it is TRACKING.
+
 Keys: F follow the robot, D perception on/off, S lidar scan on/off,
-      +/- zoom (while following).
+      B search overlay on/off, +/- zoom (while following).
 """
 
 import collections
@@ -21,13 +25,14 @@ import pyqtgraph as pg
 import rclpy
 from follow_anywhere_interfaces.msg import PerceptionLeader, PerceptionObstacleArray
 from geometry_msgs.msg import PoseArray
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import UInt32
+from std_msgs.msg import UInt8, UInt32
+from visualization_msgs.msg import MarkerArray
 
 from go2_sim2d.common import yaw_of
 from go2_sim2d.geometry import Circle
@@ -43,6 +48,10 @@ LEADER_COLOR = (240, 120, 0)
 PERSON_COLOR = (90, 90, 90)
 ROBOT_COLOR = (20, 20, 20)
 TRAIL_LENGTH = 2000
+BELIEF_COLOR = (230, 30, 30)
+SEARCH_PATH_COLOR = (0, 160, 160)
+SEARCH_TARGET_COLOR = (200, 0, 0)
+SEARCH_MODES = {0: 'TRACKING', 1: 'SEARCH', 2: 'GIVE_UP'}
 
 
 class ViewerNode(Node):
@@ -69,6 +78,10 @@ class ViewerNode(Node):
         self.obstacles = None
         self.scan = None
         self.collisions = 0
+        self.search_mode = None
+        self.belief = None
+        self.search_path = None
+        self.search_markers = None
         self.create_subscription(Odometry, '/sim/odometry', self._odom_cb, 10)
         self.create_subscription(PoseArray, '/sim/people', self._people_cb, 10)
         self.create_subscription(PoseArray, '/sim/movers', self._movers_cb, 10)
@@ -77,6 +90,10 @@ class ViewerNode(Node):
                                  self._obstacles_cb, 10)
         self.create_subscription(LaserScan, '/perception/scan', self._scan_cb, 10)
         self.create_subscription(UInt32, '/sim/collisions', self._collisions_cb, 10)
+        self.create_subscription(UInt8, '/search/mode', self._search_mode_cb, 10)
+        self.create_subscription(OccupancyGrid, '/search/belief', self._belief_cb, 1)
+        self.create_subscription(Path, '/search/path', self._search_path_cb, 10)
+        self.create_subscription(MarkerArray, '/search/markers', self._search_markers_cb, 1)
 
     def _odom_cb(self, msg):
         p = msg.pose.pose.position
@@ -107,6 +124,22 @@ class ViewerNode(Node):
     def _collisions_cb(self, msg):
         with self.lock:
             self.collisions = msg.data
+
+    def _search_mode_cb(self, msg):
+        with self.lock:
+            self.search_mode = msg.data
+
+    def _belief_cb(self, msg):
+        with self.lock:
+            self.belief = msg
+
+    def _search_path_cb(self, msg):
+        with self.lock:
+            self.search_path = msg
+
+    def _search_markers_cb(self, msg):
+        with self.lock:
+            self.search_markers = msg
 
 
 def _polygon_item(points, color, alpha=255):
@@ -158,6 +191,12 @@ class MainWindow(QtWidgets.QMainWindow):
             add(item)
             self.mover_items.append(item)
 
+        # Search belief, under everything else that moves.
+        self.belief_item = pg.ImageItem(axisOrder='col-major')
+        self.belief_item.setZValue(-5)
+        add(self.belief_item)
+        self.belief_stamp = None
+
         # Sensor fields, drawn under everything that moves.
         self.lidar_field = pg.PlotDataItem(pen=pg.mkPen((120, 120, 220), width=1,
                                                         style=QtCore.Qt.PenStyle.DashLine))
@@ -186,21 +225,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.velocity_items = pg.PlotDataItem(connect='pairs', pen=pg.mkPen((0, 0, 0), width=2))
         self.perception_items = (self.sight_items, self.velocity_items, self.obstacle_items,
                                  self.leader_item)
+        self.search_path_item = pg.PlotDataItem(pen=pg.mkPen(SEARCH_PATH_COLOR, width=3))
+        self.intercept_item = pg.PlotDataItem(pen=pg.mkPen(
+            SEARCH_TARGET_COLOR, width=2, style=QtCore.Qt.PenStyle.DashLine))
+        self.search_target_item = pg.ScatterPlotItem(
+            size=16, pxMode=True, symbol='x', pen=pg.mkPen(SEARCH_TARGET_COLOR, width=3))
+        self.search_items = (self.belief_item, self.search_path_item, self.intercept_item,
+                             self.search_target_item)
+        self.search_visible = True
         for item in (self.scan_item, self.trail_item, self.people_item, self.robot_body,
-                     self.robot_item) + self.perception_items:
+                     self.robot_item) + self.perception_items + self.search_items[1:]:
             add(item)
 
         legend = (
             f'<span style="color: rgb{PERCEIVED_LEADER_COLOR}">&#9679; leader</span> '
             '(hollow: last known) '
             f'<span style="color: rgb{OBSTACLE_COLOR}">&#9632; obstacle</span> '
-            f'<span style="color: rgb{LINE_OF_SIGHT_COLOR}">&#9679; line of sight</span>')
+            f'<span style="color: rgb{LINE_OF_SIGHT_COLOR}">&#9679; line of sight</span>   ·   '
+            f'search: <span style="color: rgb{BELIEF_COLOR}">&#9632; belief</span> '
+            f'<span style="color: rgb{SEARCH_PATH_COLOR}">&#9473; path</span> '
+            f'<span style="color: rgb{SEARCH_TARGET_COLOR}">&#10005; target</span>')
         self.info = QtWidgets.QLabel()
         help_text = QtWidgets.QLabel(
             f'Perception: {legend}   ·   ground truth: '
             f'<span style="color: rgb{LEADER_COLOR}">&#9679; leader</span> '
             f'<span style="color: rgb{PERSON_COLOR}">&#9679; people</span>   ·   '
-            'keys: F follow, D perception, S scan, +/- zoom')
+            'keys: F follow, D perception, S scan, B search, +/- zoom')
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.plot)
         layout.addWidget(self.info)
@@ -220,6 +270,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.setVisible(not item.isVisible())
         elif key == Key.Key_S:
             self.scan_item.setVisible(not self.scan_item.isVisible())
+        elif key == Key.Key_B:
+            self.search_visible = not self.search_visible
         elif key in (Key.Key_Plus, Key.Key_Equal):
             self.half_width = max(2.0, self.half_width / 1.25)
         elif key == Key.Key_Minus:
@@ -234,6 +286,7 @@ class MainWindow(QtWidgets.QMainWindow):
             people, movers = list(node.people), list(node.movers)
             leader_msg, obstacles = node.leader, node.obstacles
             scan, collisions = node.scan, node.collisions
+            search = (node.search_mode, node.belief, node.search_path, node.search_markers)
         world = node.world
 
         for item, shape in zip(self.mover_items, world.mover_shapes(movers)):
@@ -268,6 +321,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.scan_item.setData(x + ranges[hit] * np.cos(yaw + bearings[hit]),
                                    y + ranges[hit] * np.sin(yaw + bearings[hit]))
         self._draw_perception(robot, leader_msg, obstacles)
+        self._draw_search(*search)
 
         if self.follow:
             w = self.half_width
@@ -286,7 +340,43 @@ class MainWindow(QtWidgets.QMainWindow):
         self.info.setText(
             f't {time.monotonic() - self.t0:6.1f} s   ·   robot ({x:6.2f}, {y:6.2f}) '
             f'{math.degrees(yaw):6.1f} deg, {speed:.2f} m/s   ·   {leader}'
-            f'{status}, {seen} obstacles   ·   collisions {collisions}')
+            f'{status}, {seen} obstacles   ·   collisions {collisions}'
+            f'   ·   search {SEARCH_MODES.get(search[0], "-")}')
+
+    def _draw_search(self, mode, belief, path, markers):
+        active = self.search_visible and mode is not None and mode != 0
+        for item in self.search_items:
+            item.setVisible(active)
+        if not active:
+            return
+        if belief is not None and belief.header.stamp != self.belief_stamp:
+            self.belief_stamp = belief.header.stamp
+            info = belief.info
+            w, h = info.width, info.height
+            v = np.array(belief.data, dtype=np.int8).reshape(h, w).T.astype(np.float32)
+            v = np.clip(v, 0, 100) / 100.0
+            rgba = np.zeros((w, h, 4), dtype=np.uint8)
+            rgba[..., :3] = BELIEF_COLOR
+            # sqrt so the low tails stay visible next to the peak
+            rgba[..., 3] = (200 * np.sqrt(v)).astype(np.uint8)
+            self.belief_item.setImage(rgba, autoLevels=False)
+            o = info.origin.position
+            self.belief_item.setRect(QtCore.QRectF(o.x, o.y, w * info.resolution,
+                                                   h * info.resolution))
+        if path is not None and path.poses:
+            xy = np.array([(p.pose.position.x, p.pose.position.y) for p in path.poses])
+            self.search_path_item.setData(xy[:, 0], xy[:, 1])
+        else:
+            self.search_path_item.setData([], [])
+        target, line = [], ([], [])
+        if markers is not None:
+            for m in markers.markers:
+                if m.id == 0:
+                    target = [(m.pose.position.x, m.pose.position.y)]
+                elif m.id == 1 and len(m.points) == 2:
+                    line = ([q.x for q in m.points], [q.y for q in m.points])
+        self.search_target_item.setData(pos=target)
+        self.intercept_item.setData(*line)
 
     def _draw_fields(self, robot):
         x, y, yaw = robot

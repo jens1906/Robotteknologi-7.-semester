@@ -785,6 +785,7 @@ TEST(StateMachine, GraceThenSearchThenReacquire) {
   EXPECT_EQ(f.step(Pose2{}, nullptr, &miss, 1, 0.1f).mode, Mode::TRACKING);  // 0.2 s
   SearchOutput out = f.step(Pose2{}, nullptr, &miss, 1, 0.1f);              // 0.3 s = t_grace
   EXPECT_EQ(out.mode, Mode::SEARCH);
+  EXPECT_EQ(out.lost, LossCause::kNotMatched);
   EXPECT_TRUE(out.path_valid);
   EXPECT_NEAR(out.time_since_loss, 0.3f, 1e-5);  // predicted from the last sighting
   // Catch-up prediction: the target is about 0.3 s * 1 m/s ahead of the sighting.
@@ -793,6 +794,66 @@ TEST(StateMachine, GraceThenSearchThenReacquire) {
   EXPECT_EQ(out.mode, Mode::TRACKING);
   EXPECT_TRUE(out.reacquired);
   EXPECT_FALSE(out.path_valid);
+}
+
+// A slow or stuttering camera is not a loss: ticks without a frame do not count as misses.
+TEST(StateMachine, SlowCameraStaysTracking) {
+  SearchFilter f;
+  ASSERT_TRUE(f.init(test_params()));
+  Observation hit = seen_at(1.5f, 0, 0.0f, 0);
+  for (int i = 0; i < 40; ++i) {  // 15 Hz ticks, a VISIBLE frame every 0.6 s
+    const bool frame = i % 9 == 0;
+    const SearchOutput out = f.step(Pose2{}, nullptr, &hit, frame ? 1 : 0, 1.0f / 15);
+    EXPECT_EQ(out.mode, Mode::TRACKING) << i;
+    EXPECT_EQ(out.lost, LossCause::kNone) << i;
+  }
+}
+
+// Unmatched frames: perception's lost_duration decides, not the filter's own tick count.
+TEST(StateMachine, LostDurationFromPerceptionTriggersSearch) {
+  SearchFilter f;
+  ASSERT_TRUE(f.init(test_params()));
+  Observation hit = seen_at(1.5f, 0, 1.0f, 0), miss;
+  f.step(Pose2{}, nullptr, &hit, 1, 0.1f);
+  miss.lost_duration = 0.1f;
+  EXPECT_EQ(f.step(Pose2{}, nullptr, &miss, 1, 0.1f).mode, Mode::TRACKING);
+  // A late frame that perception says has not matched for 0.5 s: SEARCH (second miss in a row).
+  miss.lost_duration = 0.5f;
+  const SearchOutput out = f.step(Pose2{}, nullptr, &miss, 1, 0.1f);
+  EXPECT_EQ(out.mode, Mode::SEARCH);
+  EXPECT_EQ(out.lost, LossCause::kNotMatched);
+  EXPECT_NEAR(out.lost_after, 0.5f, 1e-6);
+  EXPECT_NEAR(out.time_since_loss, 0.5f, 1e-5);  // predicted from the last sighting
+}
+
+// 3 Hz camera: one unmatched frame is already past t_grace, but needs n_grace = 2 in a row.
+TEST(StateMachine, SingleMissOnSlowCameraIsNotALoss) {
+  SearchFilter f;
+  ASSERT_TRUE(f.init(test_params()));
+  Observation hit = seen_at(1.5f, 0, 1.0f, 0), miss;
+  f.step(Pose2{}, nullptr, &hit, 1, 0.33f);
+  miss.lost_duration = 0.33f;
+  EXPECT_EQ(f.step(Pose2{}, nullptr, &miss, 1, 0.33f).mode, Mode::TRACKING);
+  EXPECT_EQ(f.step(Pose2{}, nullptr, &hit, 1, 0.33f).mode, Mode::TRACKING);
+  EXPECT_EQ(f.step(Pose2{}, nullptr, &miss, 1, 0.33f).mode, Mode::TRACKING);  // count restarted
+  miss.lost_duration = 0.66f;
+  EXPECT_EQ(f.step(Pose2{}, nullptr, &miss, 1, 0.33f).mode, Mode::SEARCH);
+}
+
+TEST(StateMachine, NoFramesForTsilentTriggersSearch) {
+  SearchFilter f;
+  ASSERT_TRUE(f.init(test_params()));
+  Observation hit = seen_at(1.5f, 0, 1.0f, 0);
+  f.step(Pose2{}, nullptr, &hit, 1, 0.1f);
+  SearchOutput out;
+  int ticks = 0;
+  do {
+    out = f.step(Pose2{}, nullptr, nullptr, 0, 0.1f);
+    ++ticks;
+  } while (out.mode == Mode::TRACKING && ticks < 50);
+  EXPECT_EQ(out.mode, Mode::SEARCH);
+  EXPECT_EQ(out.lost, LossCause::kSilent);
+  EXPECT_NEAR(out.lost_after, test_params().t_silent, 0.051f);
 }
 
 TEST(StateMachine, GiveUpAfterTmaxThenGoToLastSeenAndRotate) {
