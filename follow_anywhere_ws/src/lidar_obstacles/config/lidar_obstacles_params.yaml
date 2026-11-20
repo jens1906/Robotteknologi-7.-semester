@@ -1,34 +1,99 @@
-# Parameters of the lidar obstacles node. Loaded by launch/lidar_obstacles.launch.py (paramsFile:=... to use another).
-# Frames: everything is in base_link (x forward, y left, z up). Units: m, s.
+# Parameters of lidar_obstacles_node. Loaded by launch/lidar_obstacles.launch.py (paramsFile:=... to use another).
 # Topic names are not parameters: they are written in lidar_obstacles_node.cpp (change them with a remapping in the launch file).
-lidar_obstacles_node:
+# Frames: everything published is in base_link (x forward, y left). Units: m, s, rad. Write floats with a decimal point.
+# Origin of values: MEASURED = from the Go2 / its bag, COPIED = same as perception_params.yaml or 2dSim's
+# perception.yaml, GUESS = engineering judgement, never tuned.
+lidar_obstacles:
   ros__parameters:
-    # --- lidar points ---------------------------------------------------------------------------
-    minRange: 0.15                           # m, horizontal; closer points are ignored
-    maxRange: 6.0                            # m, horizontal; farther points are ignored
-    minObstacleHeight: -0.20                 # m in base_link; lower points count as ground
-    maxObstacleHeight: 1.0                   # m in base_link; higher points are ignored
+    baseFrame: base_link
+    publishMarkers: true        # RViz cluster markers on /perception/lidar_markers
 
-    # --- clustering -----------------------------------------------------------------------------
-    cellSize: 0.10                           # m, grid cell edge
-    minClusterCells: 2                       # fewer occupied cells in a cluster: no obstacle
-    lidarPositionUncertainty: 0.10           # m, 1 sigma of a lidar obstacle position
+    # --- floor + cloud filter ------------------------------------------------------------------
+    # The floor is a plane fitted to each cloud: the body pitches/rolls up to ~6 deg while walking, which is
+    # +-0.25 m of floor height at 5 m. Bag go2_all_topics_6_10_11_28: floor z0 -0.37..-0.40 in base_link,
+    # tilt 1-4 deg, residual std 2.3 cm, 99 % within 8.6 cm.
+    floorZ: -0.38               # MEASURED: floor height at base_link (start value and fallback)
+    floorSearch: 0.15           # GUESS: plane height must stay within floorZ +- this; also the candidate band
+    floorFitRange: 4.0          # GUESS: m, points nearer than this are used for the fit
+    floorMaxTilt: 10.0          # GUESS: deg, steeper planes are rejected (last good plane kept)
+    floorInlierBand: 0.04       # MEASURED: ~2 sigma of the floor residual
+    floorMinimumPoints: 50      # GUESS: inliers needed to accept a plane
+    groundHeight: 0.10          # MEASURED: m above the plane that counts as floor (99 % of the floor is within 8.6 cm)
+    maxHeight: 1.9              # GUESS: m above the floor; higher (ceilings, overhangs) is ignored
+    bodyBoxMin: [-0.45, -0.2]   # COPIED from the Gazebo lidar emulator: base_link box of the robot itself
+    bodyBoxMax: [0.45, 0.2]
+    rangeMin: 0.35              # COPIED: Unitree crops the body out to about this
+    obstacleMaxRange: 6.0       # COPIED: m, farther points are ignored
 
-    # --- occupancy grid (odom frame) ------------------------------------------------------------
-    lidarMountX: 0.28                        # m, beam origin in base_link (go2_bringup/config/go2_mounts.yaml)
-    lidarMountZ: 0.0                         # m, beam origin in base_link
-    hitScore: 0.85                           # added to a cell per point ending in it
-    passScore: 0.4                           # removed from a cell once per frame when a beam passes through it
-    occupiedScore: 1.0                       # cell is an obstacle above this score (two points in one frame)
-    maxCellScore: 2.0                        # cap; lower = cells an object left clear faster
-    minCellScore: -2.0                       # floor; higher = new objects show up faster in seen-free space
-    occupiedHoldSeconds: 0.0                 # s, > 0: a cell also needs a hit this recent; 0 = off
+    # --- short memory (against flicker: the L1 gives only ~1400 points per cloud on the robot) ------
+    hitCellSize: 0.1            # GUESS: m, grid in odom
+    memorySeconds: 0.4          # GUESS: s a hit is remembered (~6 clouds); moving people leave at most this much trail
+    minCellHits: 2              # GUESS: clouds that must hit a cell within memorySeconds; 1 = no speckle filter
+    emptyCloudFraction: 0.3     # GUESS: a cloud with fewer than this share of the typical point count ...
+    emptyCloudPoints: 50        # GUESS: ... or fewer points is skipped and the last output repeated ...
+    maxSkippedClouds: 4         # GUESS: ... at most this many in a row (a lidar that went quiet is not frozen)
 
-    # --- camera people --------------------------------------------------------------------------
-    matchDistance: 0.5                       # m, a cluster this close to a predicted person belongs to that person
-    maxCameraAge: 0.5                        # s, older camera obstacles / leader are not used
+    # --- clusters -------------------------------------------------------------------------------
+    cellSize: 0.1               # GUESS: m, hash grid of the neighbour search (speed only)
+    linkDistance: 0.15          # GUESS: m, points closer than this are one obstacle ...
+    linkAngle: 0.04             # GUESS: rad, ... or closer than range * this (the L1 gets sparser far away)
+    minClusterPoints: 3         # GUESS: fewer points = noise (near) ...
+    minClusterPointsFar: 2      # GUESS: ... falling linearly to this at obstacleMaxRange
+    maxClusterRadius: 0.6       # GUESS: larger clusters (walls) are cut ...
+    wallChunk: 0.5              # GUESS: ... into pieces this size, each its own (static) obstacle
 
-    # --- odometry -------------------------------------------------------------------------------
-    odometryTimeout: 0.5                     # s without odometry before the robot counts as standing still
-    clockOffsetWindow: 5.0                   # s of odometry over which the Go2 clock offset is taken (smallest offset)
-    poseHistorySeconds: 1.0                  # s of robot poses kept to move people to the lidar time
+    # --- tracking: association and motion (IMM: static / constant velocity / turning, in odom) -----
+    gateChi2: 9.21              # 99 % of a 2D Gaussian: Mahalanobis gate of the predicted position
+    minimumGate: 0.25           # GUESS: m, always inside the gate ...
+    maximumGate: 0.5            # MEASURED (bag): m, ... never beyond (1.0 gave more ID jumps)
+    mergeRadius: 0.45           # GUESS: m, clusters fitting the same confirmed track are joined up to this (legs)
+    shapeSigmaScale: 0.25       # GUESS: centroid sigma += this * cluster radius (partial views)
+    noiseAdaptRate: 0.2         # GUESS: per-track measurement noise follows the real centroid jumps ...
+    maxNoiseScale: 25.0         # GUESS: ... up to this times the modelled variance
+    staticPositionNoise: 0.05   # GUESS: m/sqrt(s), drift of a standing object
+    cvAccelerationNoise: 1.5    # GUESS: m/s^2, walking person
+    ctAccelerationNoise: 0.8    # GUESS: m/s^2
+    ctTurnNoise: 0.3            # GUESS: rad/s^2 (tuned in test: 1.0 lets the turn rate wander)
+    modeSwitchRate: 0.3         # GUESS: 1/s (tuned in test: 1.0 lets the static model drag velocities to 0)
+    minimumSpeed: 0.15          # COPIED: m/s, slower (or slower than 2 sigma) is published as 0
+    staticPublishProbability: 0.6   # GUESS: published as 0 when the static model is this likely
+    unknownVelocitySigma: 1.5   # COPIED: m/s, velocity sigma before the second sighting
+    velocitySightings: 2        # GUESS: sightings before a velocity is published (more did not help on the bag)
+    minimumVelocitySigma: 0.05  # GUESS: m/s
+    staticVelocitySigma: 0.1    # GUESS: m/s, velocity sigma of wall pieces (velocity 0)
+
+    # --- tracking: persistence (Bayes existence probability per track, against flicker) -----------
+    missWindow: 2               # MEASURED (bag): a miss counts once per this many missed clouds in a row: missing from
+                                # one cloud costs nothing. Blinks/s 3.9 -> 3.4 at the full rate (3: no further gain)
+    birthExistence: 0.3         # GUESS: a new cluster; one sighting is never published
+    confirmExistence: 0.7       # GUESS: published from here (2 sightings) ...
+    keepExistence: 0.35         # GUESS: ... until it falls below this
+    deleteExistence: 0.05       # GUESS: track dropped
+    maxExistence: 0.9999        # GUESS: cap; sets misses survived in a row: ~9 near (0.6 s), far trackTimeout ends it
+    detectionProbabilityNear: 0.7   # MEASURED (bag, least flicker): far below 1 - churn as misses come in runs
+    detectionProbabilityFar: 0.4
+    detectionNearRange: 1.0
+    detectionFarRange: 5.0
+    falseAlarmProbability: 0.1  # GUESS: chance a cluster is noise ...
+    falseAlarmPoints: 6         # GUESS: ... raised for clusters of fewer points
+    occludedDetectionFactor: 0.1    # GUESS: detection probability times this when a nearer cluster hides the track
+    occlusionMargin: 0.3        # GUESS: m
+    trackTimeout: 1.0           # COPIED: s unseen before a track is dropped regardless ...
+    occludedTimeout: 3.0        # GUESS: ... or this while occluded
+    maxPositionSigma: 1.5       # GUESS: m, track dropped when its predicted position gets this uncertain
+    odometryTimeout: 0.5        # COPIED: s without odometry before velocities count as unknown
+
+    # --- fusion with the camera -----------------------------------------------------------------
+    matchGate: 0.5              # GUESS: m, camera point to nearest lidar point of a cluster ...
+    matchSigmas: 3.0            # GUESS: ... or this many of the camera's position sigmas, whichever is larger
+    stickyBonus: 0.2            # GUESS: m off the cost of the leader's cluster of the last cloud
+    leaderHoldTime: 1.0         # GUESS: s the LOST leader's cluster is still the leader's (not an obstacle)
+    lidarRangeStd: [0.02, 0.005]       # COPIED (2dSim, Unitree L1 spec): std = a + b * range
+    minimumPositionUncertainty: 0.05   # COPIED: m, published at least this
+    cameraPosition: [0.30, 0.0]        # COPIED (go2_mounts.yaml camera_link): start of the line of sight
+    cameraTimeout: 0.5          # GUESS: s, older camera messages are not used (lidar only)
+    lidarTimeout: 0.5           # GUESS: s without a cloud before camera messages are passed through unchanged
+    clockOffsetWindow: 5.0      # COPIED: s of odometry over which the Go2 clock offset is taken
+
+    # --- scan -----------------------------------------------------------------------------------
+    scanRays: 720
