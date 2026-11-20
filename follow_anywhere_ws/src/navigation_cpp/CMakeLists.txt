@@ -12,6 +12,9 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(follow_anywhere_interfaces REQUIRED)
 find_package(unitree_api REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 # OSQP: use an installed one if there is one, otherwise build v1.0.0 statically.
@@ -38,7 +41,8 @@ endif()
 
 add_executable(follow_leader_cpp src/main.cpp)
 target_link_libraries(follow_leader_cpp Eigen3::Eigen ${OSQP_TARGET} rclcpp::rclcpp
-  ${follow_anywhere_interfaces_TARGETS} ${unitree_api_TARGETS})
+  ${follow_anywhere_interfaces_TARGETS} ${unitree_api_TARGETS}
+  ${geometry_msgs_TARGETS} ${nav_msgs_TARGETS} ${std_msgs_TARGETS})
 
 install(TARGETS follow_leader_cpp DESTINATION lib/${PROJECT_NAME})
 

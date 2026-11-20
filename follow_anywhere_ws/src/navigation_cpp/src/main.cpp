@@ -15,12 +15,19 @@
 
 #include "follow_anywhere_interfaces/msg/perception_leader.hpp"
 #include "follow_anywhere_interfaces/msg/perception_obstacle_array.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/u_int8.hpp"
 #include "unitree_api/msg/request.hpp"
 
 using follow_anywhere_interfaces::msg::PerceptionLeader;
 using follow_anywhere_interfaces::msg::PerceptionObstacle;
 using follow_anywhere_interfaces::msg::PerceptionObstacleArray;
+using geometry_msgs::msg::PointStamped;
+using nav_msgs::msg::Odometry;
+using nav_msgs::msg::Path;
 using std::chrono::duration;
 using std::chrono::steady_clock;
 using unitree_api::msg::Request;
@@ -50,6 +57,9 @@ static double time_now() {
 
 constexpr int MAX_OBSTACLES = 10;
 constexpr int PREDICTION_HORIZON = 15;
+constexpr uint8_t SEARCH_TRACKING =
+    0; // /search/mode: 0 TRACKING, 1 SEARCH, 2 GIVE_UP
+constexpr double MAX_SEARCH_PATH_AGE = 0.5; // s; older: path weights 0
 
 struct Command {
   double vx = 0.0;
@@ -93,6 +103,22 @@ struct Leader {
   double vel_std = 0.0;        // standard deviation of the leader's velocity
   double pos_std = 0.0;        // standard deviation of the leader's position
   double spd = 0.0;            // speed of the leader
+};
+
+// Search path from leader_search (/search/path, odom frame), kept in odom; it
+// is moved into the current body frame on every solve with the latest odometry.
+struct SearchRef {
+  uint8_t mode = SEARCH_TRACKING;
+  std::vector<Eigen::Vector3d> odom; // x, y, yaw
+  rclcpp::Time stamp;
+  bool has_target = false;
+  Eigen::Vector2d target = Eigen::Vector2d::Zero(); // predicted leader, odom
+  bool has_odom = false;
+  Eigen::Vector3d robot = Eigen::Vector3d::Zero(); // robot pose in odom
+  std::vector<Eigen::Vector3d> body; // scratch: path in the body frame
+  Eigen::Vector2d target_body =
+      Eigen::Vector2d::Zero(); // scratch: target in the body frame
+  std::vector<double> arc;     // scratch: arc length along body
 };
 
 Obstacle from_obstacle(const PerceptionObstacle &obstacle) {
@@ -140,6 +166,11 @@ private:
 
   ObstacleList obstacles;
   rclcpp::Time obstacles_stamp;
+  SearchRef search_ref;
+  // Heading weight while tracking the search path: the camera has to turn
+  // towards the predicted leader, which Q(1) = 0.25 (tuned for following) does
+  // too weakly.
+  double search_heading_weight = 2.0;
   rclcpp::Time leader_stamp;
 
   Command cmd;
@@ -151,6 +182,10 @@ private:
   rclcpp::Publisher<Request>::SharedPtr pub;
   rclcpp::Subscription<PerceptionLeader>::SharedPtr leader_sub;
   rclcpp::Subscription<PerceptionObstacleArray>::SharedPtr obstacles_sub;
+  rclcpp::Subscription<Path>::SharedPtr search_path_sub;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr search_mode_sub;
+  rclcpp::Subscription<PointStamped>::SharedPtr search_target_sub;
+  rclcpp::Subscription<Odometry>::SharedPtr odom_sub;
 
   std::vector<Triplet> A_c, P_c;
   std::vector<OSQPFloat> l, u, q;
@@ -171,6 +206,44 @@ public:
         [this](const PerceptionObstacleArray::SharedPtr msg) {
           this->obstacles_callback(msg);
         });
+    search_path_sub = create_subscription<Path>(
+        "/search/path", 10, [this](const Path::SharedPtr msg) {
+          search_ref.odom.clear();
+          for (const auto &ps : msg->poses) {
+            const auto &o = ps.pose.orientation;
+            search_ref.odom.emplace_back(
+                ps.pose.position.x, ps.pose.position.y,
+                std::atan2(2.0 * (o.w * o.z + o.x * o.y),
+                           1.0 - 2.0 * (o.y * o.y + o.z * o.z)));
+          }
+          search_ref.stamp = msg->header.stamp;
+        });
+    search_mode_sub = create_subscription<std_msgs::msg::UInt8>(
+        "/search/mode", 10, [this](const std_msgs::msg::UInt8::SharedPtr msg) {
+          search_ref.mode = msg->data;
+          if (msg->data == SEARCH_TRACKING)
+            search_ref.has_target = false;
+        });
+    search_target_sub = create_subscription<PointStamped>(
+        "/search/target", 10, [this](const PointStamped::SharedPtr msg) {
+          search_ref.target = Eigen::Vector2d(msg->point.x, msg->point.y);
+          search_ref.has_target = true;
+        });
+    odom_sub = create_subscription<Odometry>(
+        "/utlidar/robot_odom", rclcpp::SensorDataQoS(),
+        [this](const Odometry::SharedPtr msg) {
+          const auto &o = msg->pose.pose.orientation;
+          search_ref.robot = Eigen::Vector3d(
+              msg->pose.pose.position.x, msg->pose.pose.position.y,
+              std::atan2(2.0 * (o.w * o.z + o.x * o.y),
+                         1.0 - 2.0 * (o.y * o.y + o.z * o.z)));
+          search_ref.has_odom = true;
+        });
+    search_ref.odom.reserve(1024);
+    search_ref.body.reserve(1024);
+    search_ref.arc.reserve(1024);
+    search_heading_weight =
+        declare_parameter("search_heading_weight", search_heading_weight);
     const double rate = declare_parameter("rate", 15.0);
     dt = 1.0 / rate;
     timer = create_wall_timer(duration<double>(dt),
@@ -180,7 +253,7 @@ public:
     constexpr int QP_VARS = 3 * (N + 1) + 3 * N + 3 * M * N + 2 * N;
     constexpr int QP_ROWS = 3 + N * (11 + 5 * M);
     constexpr int QP_A_NNZ = 3 + N * (28 + 10 * M);
-    constexpr int QP_P_NNZ = N * (18 + 3 * M);
+    constexpr int QP_P_NNZ = N * (20 + 3 * M);
 
     A_c.reserve(QP_A_NNZ);
     P_c.reserve(QP_P_NNZ);
@@ -199,7 +272,9 @@ public:
     if (msg->status != PerceptionLeader::VISIBLE || !std::isfinite(p.x()) ||
         !std::isfinite(p.y())) {
       leader.has_leader = false;
-      if (msg->lost_duration > 1.0) {
+      // While searching the warm start stays valid: it sets the sector speed
+      // limits.
+      if (msg->lost_duration > 1.0 && search_ref.mode == SEARCH_TRACKING) {
         last_path_valid = false;
       }
       return;
@@ -296,6 +371,54 @@ public:
     return std::max(0.0, (now() - stamp).seconds()) + dt;
   }
 
+  // Moves the search path into the current body frame (x0 = 0) with the latest
+  // odometry. False when there is no usable path: then the path weights are 0,
+  // as without a leader.
+  bool prepare_search_ref() {
+    SearchRef &s = search_ref;
+    if (s.mode == SEARCH_TRACKING || s.odom.empty() || !s.has_odom ||
+        s.stamp.nanoseconds() == 0 ||
+        (now() - s.stamp).seconds() > MAX_SEARCH_PATH_AGE)
+      return false;
+    const double c = std::cos(s.robot(2)), sn = std::sin(s.robot(2));
+    auto to_body = [&](double x, double y) {
+      const double dx = x - s.robot(0), dy = y - s.robot(1);
+      return Eigen::Vector2d(c * dx + sn * dy, -sn * dx + c * dy);
+    };
+    s.body.clear();
+    s.arc.clear();
+    for (const Eigen::Vector3d &q : s.odom) {
+      const Eigen::Vector2d b = to_body(q(0), q(1));
+      s.arc.push_back(
+          s.body.empty() ? 0.0
+                         : s.arc.back() + (b - s.body.back().head<2>()).norm());
+      s.body.emplace_back(b(0), b(1), q(2) - s.robot(2));
+    }
+    if (s.has_target)
+      s.target_body = to_body(s.target(0), s.target(1));
+    else
+      s.target_body = s.body.back().head<2>();
+    return true;
+  }
+
+  // Reference r_k and yaw psi_k at arc length `at` along the body-frame search
+  // path, clamped at its end.
+  Eigen::Vector3d sample_search_ref(double at) const {
+    const SearchRef &s = search_ref;
+    const size_t n = s.body.size();
+    if (n == 1 || at >= s.arc.back())
+      return s.body.back();
+    size_t i = 1;
+    while (i < n - 1 && s.arc[i] < at)
+      ++i;
+    const double seg = s.arc[i] - s.arc[i - 1];
+    const double f = seg > 1e-9 ? (at - s.arc[i - 1]) / seg : 0.0;
+    Eigen::Vector3d r = s.body[i - 1] + f * (s.body[i] - s.body[i - 1]);
+    r(2) = s.body[i - 1](2) +
+           f * std::remainder(s.body[i](2) - s.body[i - 1](2), 2.0 * M_PI);
+    return r;
+  }
+
   Eigen::Matrix<double, 3, 3> B(double theta) {
     Eigen::Matrix<double, 3, 3> B;
     const double cos_t = std::cos(theta);
@@ -333,7 +456,7 @@ public:
     };
 
     const Eigen::Vector2d Q = Eigen::Vector2d(8.0, 0.5);
-    const Eigen::Vector3d R = Eigen::Vector3d(4.0, 4.0, 1.0);
+    const Eigen::Vector3d R = Eigen::Vector3d(5.0, 5.0, 1.0);
     const Eigen::Vector3d S = Eigen::Vector3d(4.0, 4.0, 0.5);
 
     Eigen::Vector3d u_prev = Eigen::Vector3d::Zero();
@@ -345,7 +468,7 @@ public:
     double t = 0.0;
 
     double hard_margin = 0.3;
-    double soft_margin = 0.7;
+    double soft_margin = 0.5;
     double leader_margin = 1.5;
     double margin_cost = 20.0;
     double margin_cost_linear = 5.0;
@@ -367,6 +490,9 @@ public:
 
     const bool use_leader = leader.has_leader;
     const double leader_age = use_leader ? message_age(leader_stamp) : 0.0;
+    // SEARCH / GIVE_UP: track /search/path instead (a valid track wins in the
+    // same tick).
+    const bool use_search = !use_leader && prepare_search_ref();
 
     int num_obstacles = obstacles.size;
     const double obs_age = message_age(obstacles_stamp);
@@ -384,6 +510,8 @@ public:
     std::array<double, 4> speed_limit = {
         0.5, 0.2, 0.0,
         0.5}; // full_vision, partial_vision, poor_vision, heading_limit
+    const double v_ref =
+        speed_limit[0]; // search path sampled at v_ref*dt*(k+1)
 
     for (int r = 0; r < 3; ++r) {
       A_c.emplace_back(add_row(x0[r], x0[r]), xi(r, 0), 1.0);
@@ -478,8 +606,24 @@ public:
       Eigen::Vector2d leader_dir = Eigen::Vector2d::UnitX();
       double leader_dist = 0.0;
       const double Qd = use_leader ? Q(0) : 0.0;
-      const double Qh = use_leader ? Q(1) : 0.0;
+      const double Qh =
+          use_leader ? Q(1) : (use_search ? search_heading_weight : 0.0);
       double leader_cost = 0.0, leader_heading = 0.0;
+      // SEARCH / GIVE_UP: 2-D tracking of the search path, P += Qp*I and
+      // q -= Qp*r_k with r_k at arc length v_ref*dt*(k+1), Qp = Q(0).
+      double Qp = 0.0;
+      Eigen::Vector2d r_xy = Eigen::Vector2d::Zero();
+      if (use_search) {
+        const Eigen::Vector3d r_k = sample_search_ref(v_ref * dt * (k + 1));
+        Qp = Q(0);
+        r_xy = r_k.head<2>();
+        leader_heading = t + std::remainder(r_k(2) - t, 2.0 * M_PI);
+        // Line of sight: the search target plays the leader.
+        const Eigen::Vector2d rel = search_ref.target_body - p;
+        leader_dist = rel.norm();
+        if (leader_dist > 1e-6)
+          leader_dir = rel / leader_dist;
+      }
       if (use_leader) {
         Eigen::Vector2d leader_pos(leader_arr[0], leader_arr[1]);
         Eigen::Vector2d leader_rel_pos = leader_pos - p;
@@ -497,10 +641,16 @@ public:
       q[px] += -Qd * leader_dir(0) * leader_cost;
       q[py] += -Qd * leader_dir(1) * leader_cost;
       q[xi(2, k + 1)] += -Qh * leader_heading;
+      q[px] += -Qp * r_xy(0); // search path (0 while following)
+      q[py] += -Qp * r_xy(1);
 
       P_c.emplace_back(px, px, Qd * leader_dir(0) * leader_dir(0));
       P_c.emplace_back(px, py, Qd * leader_dir(0) * leader_dir(1));
       P_c.emplace_back(py, py, Qd * leader_dir(1) * leader_dir(1));
+      // Search path, summed onto the same entries by setFromTriplets: added in
+      // every mode (0 while following) so the sparsity stays the same.
+      P_c.emplace_back(px, px, Qp);
+      P_c.emplace_back(py, py, Qp);
 
       for (int r = 0; r < 3; ++r) {
         P_c.emplace_back(ui(r, k), ui(r, k), R(r)); // cost for control input
@@ -579,8 +729,8 @@ public:
           obs_pos(1) -= p(1);
 
           const double along = leader_dir.dot(obs_pos);
-          if (use_leader && std::isfinite(along) && along > 0.0 &&
-              along < leader_dist) {
+          if ((use_leader || use_search) && std::isfinite(along) &&
+              along > 0.0 && along < leader_dist) {
             const Eigen::Vector2d n_left(-leader_dir(1), leader_dir(0));
             const double off = n_left.dot(obs_pos);
             double side = off > 0.0 ? 1.0 : -1.0;
