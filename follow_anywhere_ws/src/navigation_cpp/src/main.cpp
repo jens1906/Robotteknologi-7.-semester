@@ -333,8 +333,8 @@ public:
     };
 
     const Eigen::Vector2d Q = Eigen::Vector2d(8.0, 0.5);
-    const Eigen::Vector3d R = Eigen::Vector3d(8.0, 8.0, 1.0);
-    const Eigen::Vector3d S = Eigen::Vector3d(16.0, 16.0, 0.5);
+    const Eigen::Vector3d R = Eigen::Vector3d(10.0, 10.0, 1.0);
+    const Eigen::Vector3d S = Eigen::Vector3d(25.0, 25.0, 0.5);
 
     Eigen::Vector3d u_prev = Eigen::Vector3d::Zero();
     if (last_path_valid)
@@ -383,7 +383,7 @@ public:
     leader_arr[1] += leader_arr[3] * leader_age;
     std::array<double, 4> speed_limit = {
         0.5, 0.2, 0.0,
-        0.5}; // full_vision, partial_vision, poor_vision, heading_limit
+        1.0}; // full_vision, partial_vision, poor_vision, heading_limit
 
     for (int r = 0; r < 3; ++r) {
       A_c.emplace_back(add_row(x0[r], x0[r]), xi(r, 0), 1.0);
