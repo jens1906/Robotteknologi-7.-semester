@@ -6,6 +6,14 @@ To include:
 - Read every parameter from config/perception_params.yaml and create the parts with them:
   SensorInput, PersonDetector, ReidModel, LeaderManager, CoordinateConversion, VelocityTracker,
   ObstacleMapper.
+- colorReliable (evaluation replays only, off by default): the colour image subscription is RELIABLE (still newest
+  only) instead of BEST_EFFORT, so a slowed replay loses no large raw image in transport (measured: 5-8 % random
+  single frames lost on localhost with BEST_EFFORT).
+- odometryGmc (tracker experiment, off by default): person_detector.py replaces BoT-SORT's optical-flow camera
+  motion compensation by the robot's heading change from odometry.
+- scoreAllPeople (evaluation runs only, off by default): every person is described every frame and scored against
+  the leader's current memory without changing any decision; that fresh score goes into reid_distance /
+  reid_shared_area of the debug frame instead of the leader manager's last (up to recentDistanceTime old) one.
 - Device: pick the GPU once ('auto' / 'cuda' / 'cpu'); warn loudly when it falls back to the CPU.
 - Python packages: the node runs with the system python (plain `colcon build`); append the workspace
   .venv site-packages at the END of sys.path so only missing packages (ultralytics, onnxruntime, torch)
@@ -92,6 +100,9 @@ REQUESTED_DEVICE = 'auto'
 REID_MODEL_FILE = 'osnet_backbone.onnx'
 REID_THREADS = 2
 LEADER_FILE = '~/.ros/follow_anywhere/perception_leader.npz'
+SCORE_ALL_PEOPLE = False
+COLOR_RELIABLE = False
+ODOMETRY_GMC = False
 
 # Image and calibration
 COLOR_IMAGE_ENCODING = 'bgr8'
@@ -119,6 +130,9 @@ class PerceptionNode(Node):
         self.declare_parameter('reidModelFile', REID_MODEL_FILE)
         self.declare_parameter('reidThreads', REID_THREADS)
         self.declare_parameter('leaderFile', LEADER_FILE)
+        self.declare_parameter('scoreAllPeople', SCORE_ALL_PEOPLE)
+        self.declare_parameter('colorReliable', COLOR_RELIABLE)
+        self.declare_parameter('odometryGmc', ODOMETRY_GMC)
         allSettingDefaults = {**LEADER_SETTING_DEFAULTS, **REID_SETTING_DEFAULTS, **COORDINATE_SETTING_DEFAULTS,
                               **OBSTACLE_SETTING_DEFAULTS, **VELOCITY_SETTING_DEFAULTS}
         for settingName, defaultValue in allSettingDefaults.items():
@@ -131,6 +145,9 @@ class PerceptionNode(Node):
         self.reidModelFile = self.get_parameter('reidModelFile').value
         self.reidThreads = self.get_parameter('reidThreads').value
         self.leaderFilePath = os.path.expanduser(self.get_parameter('leaderFile').value)
+        self.scoreAllPeople = self.get_parameter('scoreAllPeople').value
+        self.colorReliable = self.get_parameter('colorReliable').value
+        self.odometryGmc = self.get_parameter('odometryGmc').value
         leaderSettings = {settingName: self.get_parameter(settingName).value for settingName in LEADER_SETTING_DEFAULTS}
         reidSettings = {settingName: self.get_parameter(settingName).value for settingName in REID_SETTING_DEFAULTS}
         reidSettings['keypointConfidence'] = leaderSettings['keypointConfidence']
@@ -178,7 +195,8 @@ class PerceptionNode(Node):
 
         trackerConfigPath = os.path.join(get_package_share_directory('perception'), 'config', self.trackerConfigFile)
         self.personDetector = PersonDetector(self.ResolveModelPath(self.detectorModelFile), trackerConfigPath,
-                                             self.detectorImageSize, self.minimumBoxSizePixels, self.requestedDevice)
+                                             self.detectorImageSize, self.minimumBoxSizePixels, self.requestedDevice,
+                                             self.odometryGmc)
         self.get_logger().info(f'PersonDetector: running on {self.personDetector.inferenceDevice}')
         if self.personDetector.inferenceDeviceWarning:
             self.PublishDebugMessage('PersonDetector', self.personDetector.inferenceDeviceWarning)
@@ -187,7 +205,7 @@ class PerceptionNode(Node):
         self.get_logger().info(f'ReidModel: running on {self.reidModel.session.get_providers()[0]}')
         if self.reidModel.deviceWarning:
             self.PublishDebugMessage('ReidModel', self.reidModel.deviceWarning)
-        self.leaderManager = LeaderManager(self.reidModel.CompareDescriptions, leaderSettings)
+        self.leaderManager = LeaderManager(self.reidModel.CompareDescriptions, leaderSettings, self.reidModel.EmbedBands)
         if self.leaderManager.LoadLeader(self.leaderFilePath, self.reidModel.modelTag):
             self.get_logger().info('LeaderManager: saved leader loaded, searching for them')
         elif os.path.exists(self.leaderFilePath):
@@ -199,7 +217,9 @@ class PerceptionNode(Node):
         self.create_subscription(Image, '/camera/camera/aligned_depth_to_color/image_raw', self.HandleDepthImage,
                                  QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=1))
         self.create_subscription(CameraInfo, '/camera/camera/color/camera_info', self.HandleCameraInfo, newestMessageQos)
-        self.create_subscription(Image, '/camera/camera/color/image_raw', self.HandleColorImage, newestMessageQos)
+        colorQos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=1) if self.colorReliable \
+            else newestMessageQos
+        self.create_subscription(Image, '/camera/camera/color/image_raw', self.HandleColorImage, colorQos)
 
     def HandleColorImage(self, colorImageMessage):
         frameStartSeconds = time.perf_counter()
@@ -207,7 +227,12 @@ class PerceptionNode(Node):
         try:
             imageBgr = self.imageBridge.imgmsg_to_cv2(colorImageMessage, COLOR_IMAGE_ENCODING)
             detectionStartSeconds = time.perf_counter()
-            detectedPeople = self.personDetector.DetectAndTrackPeople(imageBgr)
+            if self.odometryGmc:
+                detectedPeople = self.personDetector.DetectAndTrackPeople(
+                    imageBgr, self.FindRobotPose(imageSeconds).heading,
+                    self.cameraModel.fx() if self.cameraModel is not None else None)
+            else:
+                detectedPeople = self.personDetector.DetectAndTrackPeople(imageBgr)
             detectorTimeMilliseconds = (time.perf_counter() - detectionStartSeconds) * 1000.0
         except Exception as error:
             self.PublishDebugMessage('PersonDetector', f'detection failed: {error}')
@@ -224,6 +249,8 @@ class PerceptionNode(Node):
         leaderEvent = self.UpdateLeader(detectedPeople, imageBgr, depthMeters, peoplePositions, gateDistances,
                                         imageSeconds)
         self.HandleLeaderEvent(leaderEvent)
+        scoredPeople = self.ScoreEveryPerson(detectedPeople, imageBgr, depthMeters, peoplePositions) \
+            if self.scoreAllPeople else None
         peopleEstimates, peopleCircles, leaderEstimate, leaderCircle = self.TrackPeopleMotion(
             detectedPeople, peopleMeasurements, measuredRadii, imageSeconds)
         leaderPosition = peoplePositions.get(self.leaderManager.visibleLeaderTrackId)
@@ -239,7 +266,7 @@ class PerceptionNode(Node):
             self.BuildObstaclesMessage(detectedPeople, peopleEstimates, peopleCircles, leaderClosestPoint, header))
         self.debugFramePublisher.publish(self.BuildDebugFrameMessage(
             detectedPeople, peoplePositions, peopleEstimates, gateDistances, leaderPosition, detectorTimeMilliseconds,
-            frameStartSeconds, imageSeconds, header))
+            frameStartSeconds, imageSeconds, header, scoredPeople))
 
     def HandleDepthImage(self, depthImageMessage):
         self.depthImagesByStamp[ConvertStampToSeconds(depthImageMessage.header.stamp)] = depthImageMessage
@@ -322,6 +349,20 @@ class PerceptionNode(Node):
         self.reidSecondsInFrame += time.perf_counter() - describeStartSeconds
         self.reidCropCountInFrame += len(trackIds)
         return descriptions
+
+    def ScoreEveryPerson(self, detectedPeople, imageBgr, depthMeters, peoplePositions):
+        if not detectedPeople or self.leaderManager.state in (IDLE_STATE, ENROLLING_STATE):
+            return {}
+        if depthMeters is not None and depthMeters.shape != imageBgr.shape[:2]:
+            depthMeters = None
+        torsoDepths = [peoplePositions[person.trackId].cameraDepth if person.trackId in peoplePositions else None
+                       for person in detectedPeople]
+        try:
+            descriptions = self.reidModel.DescribePeople(imageBgr, depthMeters, detectedPeople, torsoDepths)
+            return self.leaderManager.ScorePeople(detectedPeople, descriptions)
+        except Exception as error:
+            self.PublishDebugMessage('LeaderManager', f'scoring every person failed: {error}')
+            return {}
 
     def HandleLeaderEvent(self, leaderEvent):
         if leaderEvent == NO_EVENT:
@@ -532,7 +573,7 @@ class PerceptionNode(Node):
         return obstaclesMessage
 
     def BuildDebugFrameMessage(self, detectedPeople, peoplePositions, peopleEstimates, gateDistances, leaderPosition,
-                               detectorTimeMilliseconds, frameStartSeconds, imageSeconds, header):
+                               detectorTimeMilliseconds, frameStartSeconds, imageSeconds, header, scoredPeople):
         debugFrameMessage = PerceptionDebugFrame()
         debugFrameMessage.header = header
         debugFrameMessage.odometry_age = math.nan
@@ -571,6 +612,9 @@ class PerceptionNode(Node):
             debugPerson.is_leader = detectedPerson.trackId == self.leaderManager.visibleLeaderTrackId
             debugPerson.reid_distance = self.leaderManager.GetRecentDistance(detectedPerson.trackId, imageSeconds)
             debugPerson.reid_shared_area = self.leaderManager.GetRecentSharedArea(detectedPerson.trackId, imageSeconds)
+            if scoredPeople is not None:
+                debugPerson.reid_distance, debugPerson.reid_shared_area = scoredPeople.get(
+                    detectedPerson.trackId, (math.nan, math.nan))
             debugPerson.motion_gate_distance = gateDistances.get(detectedPerson.trackId, math.nan)
             personPosition = peoplePositions.get(detectedPerson.trackId)
             debugPerson.position_valid = personPosition is not None

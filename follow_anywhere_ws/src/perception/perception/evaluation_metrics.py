@@ -33,6 +33,40 @@ MANUAL_EVENT_TYPES = (COLLISION_EVENT, WRONG_LEADER_EVENT)
 BASE_FRAME = 'base_link'
 NAN = float('nan')
 
+# Ground-truth scoring (perception re-evaluation): a labelled leader box per frame
+VISIBLE_LEADER = 'visible'
+ABSENT_LEADER = 'absent'
+HIDDEN_LEADER = 'hidden'
+UNDETECTED_LEADER = 'undetected'
+MATCH_IOU = 0.5
+REACQUIRE_MINIMUM_GAP_SECONDS = 0.5
+CORRECT_OUTCOME = 'correct'
+WRONG_OUTCOME = 'wrong'
+MISSED_OUTCOME = 'missed'
+QUIET_OUTCOME = 'quiet'
+UNJUDGED_OUTCOME = 'unjudged'
+
+
+@dataclass
+class ScoredPerson:
+    trackId: int
+    box: tuple
+    isLeader: bool
+    distance: float
+
+
+@dataclass
+class ScoredFrame:
+    stampNanoseconds: int
+    people: list
+
+
+@dataclass
+class GroundTruthFrame:
+    state: str
+    box: tuple
+    tags: list
+
 
 @dataclass
 class RunEvent:
@@ -327,3 +361,175 @@ def CalculatePercentile(values, percentile):
         return NAN
     sortedValues = sorted(values)
     return sortedValues[min(len(sortedValues) - 1, int(len(sortedValues) * percentile / 100))]
+
+
+def ScoreAgainstGroundTruth(scoredFrames, groundTruthByStamp):
+    judgedFrames = []
+    for scoredFrame in sorted(scoredFrames, key=lambda frame: frame.stampNanoseconds):
+        groundTruth = groundTruthByStamp.get(scoredFrame.stampNanoseconds)
+        if groundTruth is not None:
+            judgedFrames.append((scoredFrame, groundTruth, JudgeFrame(scoredFrame, groundTruth)))
+    tags = sorted({tag for _, groundTruth, _ in judgedFrames for tag in groundTruth.tags})
+    return {
+        'all': SummariseJudgedFrames(judgedFrames),
+        'byTag': {tag: SummariseJudgedFrames([judged for judged in judgedFrames if tag in judged[1].tags])
+                  for tag in tags},
+        'reacquisition': MeasureReacquisition(judgedFrames),
+        'leaderTrack': MeasureLeaderTrack(judgedFrames),
+    }
+
+
+def JudgeFrame(scoredFrame, groundTruth):
+    outputLeader = next((person for person in scoredFrame.people if person.isLeader), None)
+    if groundTruth.state == UNDETECTED_LEADER:
+        return UNJUDGED_OUTCOME if outputLeader is not None else MISSED_OUTCOME
+    if groundTruth.state != VISIBLE_LEADER:
+        return WRONG_OUTCOME if outputLeader is not None else QUIET_OUTCOME
+    if outputLeader is None:
+        return MISSED_OUTCOME
+    return CORRECT_OUTCOME if CalculateBoxIou(outputLeader.box, groundTruth.box) >= MATCH_IOU else WRONG_OUTCOME
+
+
+def SummariseJudgedFrames(judgedFrames):
+    outcomes = [outcome for _, _, outcome in judgedFrames]
+    correctCount, wrongCount = outcomes.count(CORRECT_OUTCOME), outcomes.count(WRONG_OUTCOME)
+    visibleCount = sum(groundTruth.state == VISIBLE_LEADER for _, groundTruth, _ in judgedFrames)
+    leaderDistances, closestOtherDistances = CollectDistances(judgedFrames)
+    return {
+        'frames': len(judgedFrames),
+        'leaderVisibleFrames': visibleCount,
+        'correct': correctCount,
+        'wrong': wrongCount,
+        'wrongEvents': CountRuns(outcomes, WRONG_OUTCOME),
+        'missed': outcomes.count(MISSED_OUTCOME),
+        'unjudged': outcomes.count(UNJUDGED_OUTCOME),
+        'wrongLeaderRate': wrongCount / (correctCount + wrongCount) if correctCount + wrongCount else NAN,
+        'recall': correctCount / visibleCount if visibleCount else NAN,
+        'amr': CalculateOutputAmr(judgedFrames, visibleCount),
+        'personAmr': CalculatePersonAmr(judgedFrames),
+        'leaderDistance': DescribeDistribution(leaderDistances),
+        'closestOtherDistance': DescribeDistribution(closestOtherDistances),
+    }
+
+
+def CalculateOutputAmr(judgedFrames, visibleCount):
+    if not visibleCount:
+        return NAN
+    outputDistances = sorted((-math.inf if math.isnan(person.distance) else person.distance, outcome)
+                             for scoredFrame, _, outcome in judgedFrames if outcome in (CORRECT_OUTCOME, WRONG_OUTCOME)
+                             for person in scoredFrame.people if person.isLeader)
+    firstWrongDistance = next((distance for distance, outcome in outputDistances if outcome == WRONG_OUTCOME),
+                              math.inf)
+    correctBeforeWrong = sum(outcome == CORRECT_OUTCOME and distance < firstWrongDistance
+                             for distance, outcome in outputDistances)
+    return correctBeforeWrong / visibleCount
+
+
+def CalculatePersonAmr(judgedFrames):
+    leaderDistances = []
+    otherDistances = []
+    for scoredFrame, groundTruth, outcome in judgedFrames:
+        if outcome == UNJUDGED_OUTCOME or groundTruth.state == UNDETECTED_LEADER:
+            continue
+        for person in scoredFrame.people:
+            isGroundTruthLeader = (groundTruth.state == VISIBLE_LEADER
+                                   and CalculateBoxIou(person.box, groundTruth.box) >= MATCH_IOU)
+            (leaderDistances if isGroundTruthLeader else otherDistances).append(person.distance)
+    if not leaderDistances:
+        return NAN
+    lowestOther = min((distance for distance in otherDistances if not math.isnan(distance)), default=math.inf)
+    return sum(distance < lowestOther for distance in leaderDistances) / len(leaderDistances)
+
+
+def CollectDistances(judgedFrames):
+    leaderDistances = []
+    closestOtherDistances = []
+    for scoredFrame, groundTruth, _ in judgedFrames:
+        if groundTruth.state != VISIBLE_LEADER:
+            continue
+        otherDistances = []
+        for person in scoredFrame.people:
+            if math.isnan(person.distance):
+                continue
+            if CalculateBoxIou(person.box, groundTruth.box) >= MATCH_IOU:
+                leaderDistances.append(person.distance)
+            else:
+                otherDistances.append(person.distance)
+        if otherDistances:
+            closestOtherDistances.append(min(otherDistances))
+    return leaderDistances, closestOtherDistances
+
+
+def MeasureReacquisition(judgedFrames):
+    latencies = []
+    wrongFirstCount = 0
+    neverCount = 0
+    goneSinceNanoseconds = None
+    returnNanoseconds = None
+    wrongBeforeReturn = False
+    for scoredFrame, groundTruth, outcome in judgedFrames:
+        stampNanoseconds = scoredFrame.stampNanoseconds
+        if groundTruth.state in (ABSENT_LEADER, HIDDEN_LEADER):
+            if returnNanoseconds is not None:
+                neverCount += 1
+                returnNanoseconds = None
+            goneSinceNanoseconds = goneSinceNanoseconds or stampNanoseconds
+            continue
+        if goneSinceNanoseconds is not None and groundTruth.state == VISIBLE_LEADER:
+            if (stampNanoseconds - goneSinceNanoseconds) * 1e-9 >= REACQUIRE_MINIMUM_GAP_SECONDS:
+                returnNanoseconds = stampNanoseconds
+                wrongBeforeReturn = False
+            goneSinceNanoseconds = None
+        if returnNanoseconds is None:
+            continue
+        wrongBeforeReturn = wrongBeforeReturn or outcome == WRONG_OUTCOME
+        if outcome == CORRECT_OUTCOME:
+            latencies.append((stampNanoseconds - returnNanoseconds) * 1e-9)
+            wrongFirstCount += wrongBeforeReturn
+            returnNanoseconds = None
+    neverCount += returnNanoseconds is not None
+    return {'returns': len(latencies) + neverCount, 'reacquired': len(latencies), 'wrongFirst': wrongFirstCount,
+            'medianSeconds': statistics.median(latencies) if latencies else NAN,
+            'maximumSeconds': max(latencies, default=NAN)}
+
+
+def MeasureLeaderTrack(judgedFrames):
+    leaderTrackIds = []
+    swapTrackIds = set()
+    allTrackIds = set()
+    for scoredFrame, groundTruth, _ in judgedFrames:
+        allTrackIds.update(person.trackId for person in scoredFrame.people)
+        if groundTruth.state != VISIBLE_LEADER:
+            continue
+        for person in scoredFrame.people:
+            if CalculateBoxIou(person.box, groundTruth.box) >= MATCH_IOU:
+                if not leaderTrackIds or leaderTrackIds[-1] != person.trackId:
+                    leaderTrackIds.append(person.trackId)
+            elif person.trackId in leaderTrackIds:
+                swapTrackIds.add(person.trackId)
+    durationSeconds = (judgedFrames[-1][0].stampNanoseconds - judgedFrames[0][0].stampNanoseconds) * 1e-9 \
+        if len(judgedFrames) > 1 else NAN
+    return {'leaderTrackBreaks': max(0, len(leaderTrackIds) - 1), 'leaderTrackIds': len(set(leaderTrackIds)),
+            'swappedLeaderTrackIds': len(swapTrackIds),
+            'trackIdsPerMinute': len(allTrackIds) / durationSeconds * 60.0 if durationSeconds else NAN}
+
+
+def CountRuns(outcomes, wantedOutcome):
+    return sum(outcome == wantedOutcome and (index == 0 or outcomes[index - 1] != wantedOutcome)
+               for index, outcome in enumerate(outcomes))
+
+
+def DescribeDistribution(values):
+    return {'count': len(values), 'p5': CalculatePercentile(values, 5), 'p50': CalculatePercentile(values, 50),
+            'p95': CalculatePercentile(values, 95)}
+
+
+def CalculateBoxIou(boxA, boxB):
+    overlapWidth = min(boxA[2], boxB[2]) - max(boxA[0], boxB[0])
+    overlapHeight = min(boxA[3], boxB[3]) - max(boxA[1], boxB[1])
+    if overlapWidth <= 0 or overlapHeight <= 0:
+        return 0.0
+    overlapArea = overlapWidth * overlapHeight
+    areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    return overlapArea / (areaA + areaB - overlapArea)

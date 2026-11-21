@@ -61,3 +61,6 @@ CATKIN_IGNORE
 *.onnx
 *.pt
 
+
+# Local perception evaluation results (never pushed)
+PerceptionEvaluation/
