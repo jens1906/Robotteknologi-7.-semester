@@ -24,7 +24,9 @@ To include:
   With every cell visible this is exactly the whole OSNet's embedding.
 - OSNet: ONNX backbone run with onnxruntime, loaded from the package's resource/models folder (made by
   scripts/fetch_models.py). GPU (CUDA provider) when onnxruntime has it, else CPU with a warning.
-  Measured: ~18 ms per crop on the Orin GPU when run one crop at a time.
+  On the GPU the crops always go through in batches of GPU_BATCH_SIZE, padded with empty images: the CUDA provider
+  re-tunes cuDNN whenever the batch size changes. Measured on the Orin (onnxruntime 1.24, CUDA 13): every change of
+  the number of people cost ~6 s; a fixed batch of 4 takes 20-22 ms (one crop alone 14 ms).
 - Only computes what it is asked for: the decision "is this the leader" is in leader_manager.
 """
 
@@ -49,6 +51,7 @@ BACKBONE_FILE_ENDING = '_backbone.onnx'
 HEAD_FILE_ENDING = '_head.npz'
 CUDA_PROVIDER = 'CUDAExecutionProvider'
 CUDA_PROVIDER_OPTIONS = {'cudnn_conv_algo_search': 'HEURISTIC'}
+GPU_BATCH_SIZE = 4
 CPU_PROVIDER = 'CPUExecutionProvider'
 NO_CUDA_PROVIDER_WARNING = 'onnxruntime has no CUDA provider (CPU build or no GPU), ReID runs on the CPU'
 
@@ -88,6 +91,7 @@ class ReidModel:
         self.session = onnxruntime.InferenceSession(backbonePath, sessionOptions, providers=executionProviders)
         if executionProviders[0] != CPU_PROVIDER and CUDA_PROVIDER not in self.session.get_providers():
             self.deviceWarning = NO_CUDA_PROVIDER_WARNING
+        self.fixedBatchSize = GPU_BATCH_SIZE if CUDA_PROVIDER in self.session.get_providers() else None
         self.inputName = self.session.get_inputs()[0].name
         self.inputHeight, self.inputWidth = self.session.get_inputs()[0].shape[2:4]
         self.featureSize, self.cellRows, self.cellColumns = self.session.get_outputs()[0].shape[1:4]
@@ -106,10 +110,19 @@ class ReidModel:
         cropBounds = [FindCropBounds(imageBgr.shape, person) for person in people]
         inputTensor = np.stack([PrepareCrop(imageBgr, bounds, self.inputWidth, self.inputHeight)
                                 for bounds in cropBounds])
-        featureMaps = self.session.run(None, {self.inputName: inputTensor})[0]
+        featureMaps = self.RunBackbone(inputTensor)
         cellFeatures = featureMaps.transpose(0, 2, 3, 1).reshape(len(people), self.cellCount, self.featureSize)
         return [PersonDescription(personCells, self.FindVisibleCells(person, bounds, depthMeters, torsoDepth))
                 for personCells, person, bounds, torsoDepth in zip(cellFeatures, people, cropBounds, torsoDepths)]
+
+    def RunBackbone(self, inputTensor):
+        if self.fixedBatchSize is None:
+            return self.session.run(None, {self.inputName: inputTensor})[0]
+        paddingCount = -len(inputTensor) % self.fixedBatchSize
+        paddedTensor = np.concatenate([inputTensor, np.zeros((paddingCount, *inputTensor.shape[1:]), np.float32)])
+        featureMaps = [self.session.run(None, {self.inputName: paddedTensor[start:start + self.fixedBatchSize]})[0]
+                       for start in range(0, len(paddedTensor), self.fixedBatchSize)]
+        return np.concatenate(featureMaps)[:len(inputTensor)]
 
     def FindVisibleCells(self, person, cropBounds, depthMeters, torsoDepth):
         left, top, right, bottom = cropBounds
