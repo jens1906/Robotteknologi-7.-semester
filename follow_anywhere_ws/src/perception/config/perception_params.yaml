@@ -12,8 +12,8 @@ perception_node:
     trackerConfigFile: botsort.yaml          # in this package's config/
     requestedDevice: auto                    # auto / cuda / cpu, for the detector and OSNet; auto warns loudly when it falls back to CPU
 
-    # --- re-identification (OSNet) --------------------------------------------------------------
-    reidModelFile: osnet_backbone.onnx       # in resource/models/ (scripts/fetch_models.py, which also writes the head osnet_head.npz next to it)
+    # --- re-identification (OSNet-AIN) ----------------------------------------------------------
+    reidModelFile: osnet_ain_msmt17_backbone.onnx   # in resource/models/ (scripts/fetch_models.py, which also writes the head osnet_ain_msmt17_head.npz next to it)
     reidThreads: 2                           # CPU threads for OSNet (leaves cores for the detector)
     reidDepthMask: cells                     # cells / none: cells = parts of the crop at another depth than the person (someone in front) are not compared
     depthMaskBand: 0.5                       # GUESS: m, pixels this close to the person's torso depth count as the person
@@ -21,10 +21,10 @@ perception_node:
 
     # --- leader. Origin of each value: MEASURED = from MOT17 street video (static camera), CHOSEN = picked after a failure
     # --- there, GUESS = engineering judgement, never tuned. NONE of them were tuned on the Go2 / RealSense yet.
-    reidAccept: 0.45                         # MEASURED for plain OSNet on MOT17 (lets ~0.2% of other people through per comparison); shuffle bag 1110_0911: leader p95 0.47, others min 0.51. Re-measure with the shared area
-    gatedAccept: 0.7                         # MEASURED on 1119 bags (ConstrainedBasicFollow, Test): leader coming back 0.50-0.70, other people >= 0.77 (one partial box 0.71); was 0.5 from shuffle bag 1110_0911
-    reidDrop: 0.82                           # MEASURED for plain OSNet: distance above which the followed person looks wrong (above 99% of true views). Re-measure with the shared area
-    reidMargin: 0.05                         # CHOSEN: lead the best candidate needs over the second best (after a wrong person got through)
+    reidAccept: 0.87                         # MEASURED (OSNet-AIN, bags 1110_0911 + 1120_1000): lets 0.2 % of other people through per comparison
+    gatedAccept: 0.89                        # MEASURED (OSNet-AIN, bags 1110_0911 + 1120_1000): lets 1 % of other people through per comparison
+    reidDrop: 0.935                          # MEASURED (OSNet-AIN, bags 1110_0911 + 1120_1000): leader p99, above this the followed person looks wrong
+    reidMargin: 0.063                        # SCALED from the old OSNet value (0.05) to OSNet-AIN's distance spread
     reidConfirm: 3                           # CHOSEN: wins needed ... (frames in a row are correlated, so not "in a row")
     reidConfirmWindow: 6                     # CHOSEN: ... in a candidate's last comparisons
     verifyPeriod: 0.2                        # s between OSNet checks of the followed person; was 1.0, 0 = every frame. ~14 ms per check on CPU
@@ -39,7 +39,7 @@ perception_node:
     enrollGraceTime: 2.0                     # CHOSEN: s the person being enrolled may be missing (the tracker drops boxes for a few frames now and then)
     enrollRebindIou: 0.6                     # GUESS: a new track this much on the enrolled person's last box is the same person (track id change)
     viewsPerGroup: 6                         # GUESS: stored views per group (front, back, side left, side right, partly hidden), calibration + learned
-    noveltyDistance: 0.25                    # GUESS: a view closer than this to a stored one of its group is not stored again
+    noveltyDistance: 0.315                   # SCALED from the old OSNet value (0.25) to OSNet-AIN's distance spread: a view closer than this to a stored one of its group is not stored again
     trustTime: 3.0                           # GUESS: s after a strong match (below reidAccept) on the same unbroken track in which views are learned
     keypointConfidence: 0.5                  # GUESS: keypoint confidence above which a body point counts as visible
     sideRatio: 0.35                          # GUESS: shoulder width below this share of the torso height = seen from the side

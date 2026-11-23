@@ -46,14 +46,6 @@ To include:
 - Save the anchors with their group to a file (numpy, no pickle, tagged with the reid model) and load
   them at start, so the leader survives a restart.
 - Descriptions and comparisons come in through callables, so this file needs no model.
-- Experiment switches (perception re-evaluation, defaults = the behaviour above):
-  - decisionLayer: distance (smallest distance over the stored views), ridge (ridge_classifier.py per view group
-    with an all-groups fallback, trained on the stored views vs the negatives, distance = 1 - score) or
-    ridgeAllGroups (one classifier for all groups). With a classifier the negatives are inside it, so the margin
-    over the negative bank is not used.
-  - viewMemory: groups (the five groups above), fifo (the last fifoViews leader views, no groups, the enrolment
-    views age out), shortTerm (Ye et al. 2024 with a frozen network: the last shortTermSize descriptions of the
-    leader and of other people while following, both from the same checks) or hybrid (groups + shortTerm).
 """
 
 import math
@@ -66,14 +58,13 @@ import numpy as np
 from perception.body_view import (BODY_VIEW_SETTING_DEFAULTS, FACING_GROUPS, UNKNOWN_GROUP, VIEW_GROUPS,
                                   FindViewGroup, IsCleanView)
 from perception.reid_model import PersonDescription, StackDescriptions
-from perception.ridge_classifier import FitBandClassifiers, ScoreBands
 
 # Parameter defaults (set in config/perception_params.yaml, the origin of each value is written there)
 LEADER_SETTING_DEFAULTS = {
-    'reidAccept': 0.45,
-    'gatedAccept': 0.7,
-    'reidDrop': 0.82,
-    'reidMargin': 0.05,
+    'reidAccept': 0.87,
+    'gatedAccept': 0.89,
+    'reidDrop': 0.935,
+    'reidMargin': 0.063,
     'reidConfirm': 3,
     'reidConfirmWindow': 6,
     'verifyPeriod': 0.2,
@@ -88,7 +79,7 @@ LEADER_SETTING_DEFAULTS = {
     'enrollGraceTime': 2.0,
     'enrollRebindIou': 0.6,
     'viewsPerGroup': 6,
-    'noveltyDistance': 0.25,
+    'noveltyDistance': 0.315,
     'trustTime': 3.0,
     'graceTime': 1.0,
     'lostTime': 10.0,
@@ -101,11 +92,6 @@ LEADER_SETTING_DEFAULTS = {
     'swapGateSigma': 4.0,
     'negativeBankSize': 40,
     'negativePeriod': 1.0,
-    'decisionLayer': 'distance',
-    'viewMemory': 'groups',
-    'fifoViews': 30,
-    'shortTermSize': 64,
-    'ridgeLambda': 1.0,
     **BODY_VIEW_SETTING_DEFAULTS,
 }
 
@@ -115,16 +101,6 @@ ENROLLING_STATE = 1
 FOLLOWING_STATE = 2
 SEARCHING_STATE = 3
 LOST_STATE = 4
-
-# Decision layers and view memories
-DISTANCE_DECISION = 'distance'
-RIDGE_DECISION = 'ridge'
-GROUPS_MEMORY = 'groups'
-FIFO_MEMORY = 'fifo'
-SHORT_TERM_MEMORY = 'shortTerm'
-HYBRID_MEMORY = 'hybrid'
-ALL_GROUPS_KEY = 'all'
-MINIMUM_GROUP_POSITIVES = 2
 
 # Events and ids
 NO_EVENT = ''
@@ -136,10 +112,9 @@ NO_TRACK_ID = -1
 
 
 class LeaderManager:
-    def __init__(self, compareDescriptions, leaderSettings=None, embedBands=None):
+    def __init__(self, compareDescriptions, leaderSettings=None):
         self.settings = SimpleNamespace(**{**LEADER_SETTING_DEFAULTS, **(leaderSettings or {})})
         self.compareDescriptions = compareDescriptions
-        self.embedBands = embedBands
         self.distanceByTrackId = {}
         self.sharedAreaByTrackId = {}
         self.distanceSecondsByTrackId = {}
@@ -156,9 +131,6 @@ class LeaderManager:
         self.viewStack = StackDescriptions([])
         self.negativeDescriptions = deque(maxlen=self.settings.negativeBankSize)
         self.negativeStack = StackDescriptions([])
-        self.fifoViews = deque(maxlen=self.settings.fifoViews)
-        self.shortTermSamples = deque(maxlen=self.settings.shortTermSize)
-        self.bandClassifiers = {}
         self.enrollTrackId = NO_TRACK_ID
         self.enrollLastPerson = None
         self.enrollmentRebound = False
@@ -224,7 +196,8 @@ class LeaderManager:
             return False
         self.Reset()
         for personCells, personVisibleCells, viewGroup in zip(cellFeatures, visibleCells, viewGroups):
-            self.AddAnchor(PersonDescription(personCells, personVisibleCells), int(viewGroup))
+            self.viewDescriptions[int(viewGroup)].append(PersonDescription(personCells, personVisibleCells))
+            self.anchorCounts[int(viewGroup)] += 1
         self.RestackViews()
         self.state = SEARCHING_STATE
         return True
@@ -278,17 +251,12 @@ class LeaderManager:
                 self.eventReason = 'person changed'
                 return ENROLL_FAILED_EVENT
             self.enrollmentRebound = False
-        self.AddAnchor(description, viewGroup)
+        self.viewDescriptions[viewGroup].append(description)
+        self.anchorCounts[viewGroup] += 1
         self.RestackViews()
         if self.CountFilledDirections() < len(FACING_GROUPS):
             return NO_EVENT
         return self.FinishEnrollment(person, nowSeconds)
-
-    def AddAnchor(self, description, viewGroup):
-        self.viewDescriptions[viewGroup].append(description)
-        self.anchorCounts[viewGroup] += 1
-        self.fifoViews.append((description, viewGroup))
-        self.shortTermSamples.append((description, True, viewGroup))
 
     def CountFilledDirections(self):
         return sum(self.anchorCounts[viewGroup] >= self.settings.enrollViewsPerDirection for viewGroup in FACING_GROUPS)
@@ -326,7 +294,7 @@ class LeaderManager:
         negativePeople = self.PickNegativePeople(person, detectedPeople, nowSeconds, imageWidth) if recentlyMatched else []
         descriptions = describePeople([person.trackId] + [negativePerson.trackId for negativePerson in negativePeople])
         self.lastVerifySeconds = nowSeconds
-        distance, sharedArea = self.ScoreLeader(descriptions[0], person)
+        distance, sharedArea = self.FindNearestDistance(descriptions[0], self.viewStack)
         self.RememberDistance(person.trackId, distance, sharedArea, nowSeconds)
         if math.isnan(distance):
             if returned or overlapped:
@@ -344,7 +312,6 @@ class LeaderManager:
             self.badCheckCount = 0
             self.AddNegatives(descriptions[1:], nowSeconds)
             self.LearnIfSureWhoItIs(person, detectedPeople, descriptions[0], distance, nowSeconds, imageWidth)
-            self.RememberShortTerm(person, negativePeople, descriptions)
         self.reidMargin = self.FindLeadOverOthers(person.trackId, distance, descriptions[0], detectedPeople,
                                                   nowSeconds)
         self.visibleLeaderTrackId = person.trackId
@@ -365,14 +332,7 @@ class LeaderManager:
             nearestDistance, _ = self.FindNearestDistance(description, self.negativeStack)
             if not nearestDistance < self.settings.noveltyDistance:
                 self.negativeDescriptions.append(description)
-                self.RestackViews()
-
-    def RememberShortTerm(self, leaderPerson, negativePeople, descriptions):
-        if self.settings.viewMemory not in (SHORT_TERM_MEMORY, HYBRID_MEMORY):
-            return
-        for person, description in zip([leaderPerson] + negativePeople, descriptions):
-            self.shortTermSamples.append((description, person is leaderPerson, FindViewGroup(person, self.settings)))
-        self.RestackViews()
+                self.negativeStack = StackDescriptions(list(self.negativeDescriptions))
 
     def LearnIfSureWhoItIs(self, person, detectedPeople, description, distance, nowSeconds, imageWidth):
         recentlyMatched = nowSeconds - self.lastStrongMatchSeconds <= self.settings.trustTime
@@ -385,10 +345,6 @@ class LeaderManager:
             self.LearnView(description, viewGroup)
 
     def LearnView(self, description, viewGroup):
-        if self.settings.viewMemory == FIFO_MEMORY:
-            self.fifoViews.append((description, viewGroup))
-            self.RestackViews()
-            return
         groupDescriptions = self.viewDescriptions[viewGroup]
         if groupDescriptions:
             nearestDistance, _ = self.FindNearestDistance(description, StackDescriptions(groupDescriptions))
@@ -440,7 +396,7 @@ class LeaderManager:
         acceptDistances = {person.trackId: self.FindAcceptDistance(gateDistances.get(person.trackId, math.nan))
                            for person in comparedPeople}
         for person, description in zip(comparedPeople, descriptions):
-            distance, sharedArea = self.ScoreLeader(description, person)
+            distance, sharedArea = self.FindNearestDistance(description, self.viewStack)
             if math.isnan(distance):
                 self.RememberDistance(person.trackId, distance, sharedArea, nowSeconds)
                 continue
@@ -528,32 +484,7 @@ class LeaderManager:
         nearestIndex = int(np.nanargmin(distances))
         return float(distances[nearestIndex]), float(sharedAreas[nearestIndex])
 
-    def ScoreLeader(self, description, person):
-        if self.settings.decisionLayer == DISTANCE_DECISION:
-            return self.FindNearestDistance(description, self.viewStack)
-        if not self.bandClassifiers:
-            return math.inf, math.nan
-        bandClassifier = self.bandClassifiers.get(FindViewGroup(person, self.settings),
-                                                  self.bandClassifiers[ALL_GROUPS_KEY])
-        bandEmbeddings, bandVisibility = self.GetBands(description)
-        score, visibleShare = ScoreBands(bandClassifier, bandEmbeddings, bandVisibility,
-                                         self.settings.minimumSharedArea)
-        return 1.0 - score, visibleShare
-
-    def ScorePeople(self, people, descriptions):
-        if not len(self.viewStack.cellFeatures):
-            return {}
-        return {person.trackId: self.ScoreLeader(description, person)
-                for person, description in zip(people, descriptions)}
-
-    def GetBands(self, description):
-        if description.bands is None:
-            description.bands = self.embedBands(description)
-        return description.bands
-
     def FindNegativeDistance(self, description):
-        if self.settings.decisionLayer != DISTANCE_DECISION:
-            return math.inf
         negativeDistance, _ = self.FindNearestDistance(description, self.negativeStack)
         return math.inf if math.isnan(negativeDistance) else negativeDistance
 
@@ -563,48 +494,8 @@ class LeaderManager:
         self.distanceSecondsByTrackId[trackId] = nowSeconds
 
     def RestackViews(self):
-        positiveViews, negativeViews = self.CollectMemoryViews()
-        self.viewStack = StackDescriptions([description for description, _ in positiveViews])
-        self.negativeStack = StackDescriptions([description for description, _ in negativeViews])
-        if self.settings.decisionLayer != DISTANCE_DECISION:
-            self.FitClassifiers(positiveViews, negativeViews)
-
-    def CollectMemoryViews(self):
-        groupViews = [(description, viewGroup) for viewGroup, descriptions in self.viewDescriptions.items()
-                      for description in descriptions]
-        bankViews = [(description, UNKNOWN_GROUP) for description in self.negativeDescriptions]
-        shortTermPositives = [(description, viewGroup) for description, isLeader, viewGroup in self.shortTermSamples
-                              if isLeader]
-        shortTermNegatives = [(description, viewGroup) for description, isLeader, viewGroup in self.shortTermSamples
-                              if not isLeader]
-        if self.settings.viewMemory == FIFO_MEMORY:
-            return list(self.fifoViews), bankViews
-        if self.settings.viewMemory == SHORT_TERM_MEMORY:
-            return shortTermPositives, shortTermNegatives
-        if self.settings.viewMemory == HYBRID_MEMORY:
-            return groupViews + shortTermPositives, bankViews + shortTermNegatives
-        return groupViews, bankViews
-
-    def FitClassifiers(self, positiveViews, negativeViews):
-        self.bandClassifiers = {}
-        if not positiveViews:
-            return
-        trainingBands = [self.GetBands(description) for description, _ in positiveViews + negativeViews]
-        bandEmbeddings = np.stack([bands[0] for bands in trainingBands])
-        bandVisibility = np.stack([bands[1] for bands in trainingBands])
-        labels = np.array([True] * len(positiveViews) + [False] * len(negativeViews))
-        viewGroups = np.array([viewGroup for _, viewGroup in positiveViews] + [UNKNOWN_GROUP] * len(negativeViews))
-        self.bandClassifiers[ALL_GROUPS_KEY] = FitBandClassifiers(bandEmbeddings, bandVisibility, labels,
-                                                                  self.settings.ridgeLambda)
-        if self.settings.decisionLayer != RIDGE_DECISION:
-            return
-        for viewGroup in VIEW_GROUPS:
-            groupPositives = labels & (viewGroups == viewGroup)
-            if groupPositives.sum() >= MINIMUM_GROUP_POSITIVES:
-                usedSamples = groupPositives | ~labels
-                self.bandClassifiers[viewGroup] = FitBandClassifiers(
-                    bandEmbeddings[usedSamples], bandVisibility[usedSamples], labels[usedSamples],
-                    self.settings.ridgeLambda)
+        self.viewStack = StackDescriptions([description for descriptions in self.viewDescriptions.values()
+                                            for description in descriptions])
 
     def IsOverlapped(self, person, detectedPeople):
         return any(other.trackId != person.trackId and CalculateIou(person, other) > self.settings.crossingIou

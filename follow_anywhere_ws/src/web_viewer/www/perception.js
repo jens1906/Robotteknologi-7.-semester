@@ -15,8 +15,8 @@ const NO_LEADER_STATUS = 0;
 const VISIBLE_LEADER_STATUS = 1;
 
 // Leader certainty (REID_ACCEPT and REID_DROP are reidAccept and reidDrop in perception_params.yaml)
-const REID_ACCEPT = 0.45;
-const REID_DROP = 0.82;
+const REID_ACCEPT = 0.87;
+const REID_DROP = 0.935;
 const CERTAINTY_BAR_MAX_DISTANCE = 1.0;
 const CERTAINTY_BAR_HEIGHT_PIXELS = 7;
 const CERTAINTY_BAR_MIN_WIDTH_PIXELS = 70;
