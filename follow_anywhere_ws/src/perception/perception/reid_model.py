@@ -19,10 +19,14 @@ To include:
   leader (upper body against upper body). Shared area below minimumSharedArea: distance NaN (unknown, no evidence).
   With every cell visible this is exactly the whole OSNet's embedding.
 - OSNet: ONNX backbone run with onnxruntime, loaded from the package's resource/models folder (made by
-  scripts/fetch_models.py). GPU (CUDA provider) when onnxruntime has it, else CPU with a warning.
+  scripts/fetch_models.py). TensorRT provider (FP32) when onnxruntime has it, else CUDA, else CPU with a warning.
+  TensorRT builds an engine for this GPU on the first start (~40 s on the Orin) and keeps it in
+  TENSORRT_CACHE_FOLDER, so later starts load it. FP32 because the thresholds were measured with FP32 distances
+  (measured: TensorRT FP32 differs at most 0.0018, FP16 0.0026). A batch of 4: CUDA 24 ms, TensorRT FP32 11 ms.
   On the GPU the crops always go through in batches of GPU_BATCH_SIZE, padded with empty images: the CUDA provider
-  re-tunes cuDNN whenever the batch size changes. Measured on the Orin (onnxruntime 1.24, CUDA 13): every change of
-  the number of people cost ~6 s; a fixed batch of 4 takes 20-22 ms (one crop alone 14 ms).
+  re-tunes cuDNN whenever the batch size changes (measured ~6 s per change of the number of people) and a TensorRT
+  engine is built for one batch size. One empty batch runs at the start, so the engine build and the warm-up
+  happen before the first person is compared.
 - Only computes what it is asked for: the decision "is this the leader" is in leader_manager.
 """
 
@@ -45,6 +49,10 @@ REID_SETTING_DEFAULTS = {
 # ReID backbone
 BACKBONE_FILE_ENDING = '_backbone.onnx'
 HEAD_FILE_ENDING = '_head.npz'
+TENSORRT_PROVIDER = 'TensorrtExecutionProvider'
+TENSORRT_CACHE_FOLDER = os.path.expanduser('~/.ros/follow_anywhere/tensorrt_cache')
+TENSORRT_PROVIDER_OPTIONS = {'trt_fp16_enable': False, 'trt_engine_cache_enable': True,
+                             'trt_engine_cache_path': TENSORRT_CACHE_FOLDER}
 CUDA_PROVIDER = 'CUDAExecutionProvider'
 CUDA_PROVIDER_OPTIONS = {'cudnn_conv_algo_search': 'HEURISTIC'}
 GPU_BATCH_SIZE = 4
@@ -71,9 +79,14 @@ class DescriptionStack:
 def SelectExecutionProviders(requestedDevice):
     if requestedDevice not in ('auto', 'cuda'):
         return [CPU_PROVIDER], ''
-    if CUDA_PROVIDER in onnxruntime.get_available_providers():
-        return [(CUDA_PROVIDER, CUDA_PROVIDER_OPTIONS), CPU_PROVIDER], ''
-    return [CPU_PROVIDER], NO_CUDA_PROVIDER_WARNING
+    availableProviders = onnxruntime.get_available_providers()
+    if CUDA_PROVIDER not in availableProviders:
+        return [CPU_PROVIDER], NO_CUDA_PROVIDER_WARNING
+    executionProviders = [(CUDA_PROVIDER, CUDA_PROVIDER_OPTIONS), CPU_PROVIDER]
+    if TENSORRT_PROVIDER in availableProviders:
+        os.makedirs(TENSORRT_CACHE_FOLDER, exist_ok=True)
+        executionProviders.insert(0, (TENSORRT_PROVIDER, TENSORRT_PROVIDER_OPTIONS))
+    return executionProviders, ''
 
 
 class ReidModel:
@@ -93,6 +106,8 @@ class ReidModel:
         backboneHead = np.load(backbonePath.replace(BACKBONE_FILE_ENDING, HEAD_FILE_ENDING))
         self.headBias = backboneHead['bias'].astype(np.float32)
         self.modelTag = f'{os.path.basename(backbonePath)}:projected:{self.settings.reidDepthMask}'
+        if self.fixedBatchSize is not None:
+            self.RunBackbone(np.zeros((self.fixedBatchSize, 3, self.inputHeight, self.inputWidth), np.float32))
 
     def DescribePeople(self, imageBgr, depthMeters, people, torsoDepths):
         if not people:
