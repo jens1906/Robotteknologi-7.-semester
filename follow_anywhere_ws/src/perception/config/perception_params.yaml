@@ -6,7 +6,7 @@ perception_node:
     baseFrame: base_link
 
     # --- person detector + tracker --------------------------------------------------------------
-    detectorModelFile: yolo26n-pose.pt       # in resource/models/ (scripts/fetch_models.py); pose model: keypoints for depth sampling. On the Orin: yolo26n-pose.engine (TensorRT FP16, made there by fetch_models.py --engine)
+    detectorModelFile: yolo26n-pose.engine   # in resource/models/; TensorRT FP16, made on the Orin by scripts/fetch_models.py --engine (MEASURED: detector 58 -> 28 ms, 12 -> 20 Hz). Without the engine (a PC): yolo26n-pose.pt
     detectorImageSize: 640                   # the camera's own resolution; 960 was ~2x slower on CPU
     minimumBoxSizePixels: 24                 # px, smaller detections are ignored
     trackerConfigFile: botsort.yaml          # in this package's config/

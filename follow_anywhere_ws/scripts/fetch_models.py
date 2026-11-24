@@ -38,9 +38,11 @@ MAXIMUM_SPLIT_DIFFERENCE = 1e-4
 IMAGE_TRANSPORT_PLUGINS = ('compressed_image_transport', 'compressed_depth_image_transport')
 IMAGE_TRANSPORT_INSTALL_COMMAND = 'sudo apt install ros-jazzy-image-transport-plugins'
 
-# TensorRT detector engine (only on the machine that runs it, e.g. the Orin)
+# TensorRT detector engine (only on the machine that runs it, e.g. the Orin). TensorRT comes with JetPack in the
+# system python, not in the venv: its folder is added at the end of sys.path, so the venv's packages keep priority
 ENGINE_FLAG = '--engine'
 ENGINE_IMAGE_SIZE = 640
+SYSTEM_PACKAGES_FOLDER = f'/usr/lib/python3.{sys.version_info.minor}/dist-packages'
 
 
 class SplitOsnetBackbone(torch.nn.Module):
@@ -124,6 +126,8 @@ def CheckOsnetSplit(backbonePath, headBias, testImages, wholeEmbeddings):
 
 
 def ExportDetectorEngine():
+    if importlib.util.find_spec('tensorrt') is None:
+        sys.path.append(SYSTEM_PACKAGES_FOLDER)
     detectorModel = YOLO(os.path.join(MODELS_FOLDER, YOLO_MODEL_FILE))
     enginePath = detectorModel.export(format='engine', half=True, imgsz=ENGINE_IMAGE_SIZE, device=0)
     print(f'TensorRT detector: {enginePath} (set detectorModelFile to its name, then colcon build)')
