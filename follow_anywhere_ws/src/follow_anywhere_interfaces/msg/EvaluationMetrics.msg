@@ -36,3 +36,5 @@ int32 wrong_leader_mark_count
 float32 perception_rate                    # Hz of /perception/leader, last rate window
 float32 navigation_rate                    # Hz of /api/sport/request, last rate window
 float32 frame_time_ms                      # perception frame callback, this frame
+float32 image_age_ms                       # camera image age when perception got it, this frame
+float32 camera_age_at_fusion_ms            # newest fused leader: lidar cloud time - camera image time

@@ -55,6 +55,7 @@ def FormatReportMarkdown(report):
     recovery = report['recovery']
     wrongLeader = report['wrongLeader']
     runtime = report['runtime']
+    systemUsage = report['systemUsage']
     manual = report['manual']
     metricRows = [
         ('Follow success', FormatAnswer(followSuccess['success']),
@@ -80,7 +81,25 @@ def FormatReportMarkdown(report):
          f'auto: perception worst {FormatNumber(runtime["perceptionRateWorst"], " Hz")}, navigation mean '
          f'{FormatNumber(runtime["navigationRateMean"], " Hz")} (worst {FormatNumber(runtime["navigationRateWorst"], " Hz")}), '
          f'frame time mean {FormatNumber(runtime["frameTimeMsMean"], " ms")}, p95 {FormatNumber(runtime["frameTimeMsP95"], " ms")}'),
+        ('Camera delay', FormatNumber(runtime['cameraAgeAtFusionMs']['p50'], ' ms'),
+         f'auto: camera age at fusion p50, p95 {FormatNumber(runtime["cameraAgeAtFusionMs"]["p95"], " ms")}; image age '
+         f'when perception got it p50 {FormatNumber(runtime["imageAgeMs"]["p50"], " ms")}, '
+         f'p95 {FormatNumber(runtime["imageAgeMs"]["p95"], " ms")}'),
+        ('Orin load', FormatNumber(systemUsage['cpuPercent']['mean'], ' % CPU'),
+         f'auto: CPU p95 {FormatNumber(systemUsage["cpuPercent"]["p95"], " %")}, GPU mean '
+         f'{FormatNumber(systemUsage["gpuPercent"]["mean"], " %")} '
+         f'(p95 {FormatNumber(systemUsage["gpuPercent"]["p95"], " %")}), '
+         f'RAM max {FormatNumber(systemUsage["ramUsedMbMax"], " MB")}, power mean '
+         f'{FormatNumber(systemUsage["powerTotalMw"]["mean"], " mW")}, junction max '
+         f'{FormatNumber(systemUsage["junctionTemperatureMax"], " C")}, network in/out '
+         f'{FormatNumber(systemUsage["networkReceiveMbps"]["mean"], " MB/s")}/'
+         f'{FormatNumber(systemUsage["networkSendMbps"]["mean"], " MB/s")}, disk write '
+         f'{FormatNumber(systemUsage["diskWriteMbps"]["mean"], " MB/s")}'),
     ]
+    for nodeName, nodeUsage in systemUsage['nodes'].items():
+        metricRows.append((f'Node {nodeName}', FormatNumber(nodeUsage['cpuPercent']['mean'], ' % of a core'),
+                           f'auto: CPU p95 {FormatNumber(nodeUsage["cpuPercent"]["p95"], " %")}, memory max '
+                           f'{FormatNumber(nodeUsage["memoryMbMax"], " MB")}'))
     lines = [
         '# Evaluation report',
         '',

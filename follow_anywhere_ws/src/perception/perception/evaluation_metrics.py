@@ -101,6 +101,9 @@ class RunMetrics:
         self.obstacleWasNear = False
         self.markCounts = {eventType: 0 for eventType in MANUAL_EVENT_TYPES}
         self.frameTimes = []
+        self.imageAges = []
+        self.cameraAgesAtFusion = []
+        self.systemSamples = []
         self.perceptionRate = RateCounter(self.settings.rateWindow, onlyWhileActive=False)
         self.navigationRate = RateCounter(self.settings.rateWindow, onlyWhileActive=True)
         self.events = []
@@ -124,10 +127,12 @@ class RunMetrics:
             self.suspectedSwitchCount += 1
             self.AddEvent('suspected_switch', f'leader found again {jumpDistance:.2f} m from where it was last seen')
 
-    def UpdateDebugFrame(self, stampSeconds, leaderState, secondsSinceSeen, frameTimeMs):
+    def UpdateDebugFrame(self, stampSeconds, leaderState, secondsSinceSeen, frameTimeMs, imageAgeMs):
         self.AdvanceRunClock(stampSeconds)
         if math.isfinite(frameTimeMs):
             self.frameTimes.append(frameTimeMs)
+        if math.isfinite(imageAgeMs):
+            self.imageAges.append(imageAgeMs)
         self.AccumulateStateTime(stampSeconds)
         if self.leaderState == FOLLOWING_STATE and leaderState in LOSS_STATES:
             self.StartLoss(stampSeconds, secondsSinceSeen)
@@ -174,6 +179,30 @@ class RunMetrics:
 
     def CountNavigationCommand(self, receiveSeconds):
         self.navigationRate.Count(receiveSeconds)
+
+    def UpdateCameraAgeAtFusion(self, cameraAgeMs):
+        if math.isfinite(cameraAgeMs) and cameraAgeMs >= 0.0:
+            self.cameraAgesAtFusion.append(cameraAgeMs)
+
+    def UpdateSystemUsage(self, systemSample):
+        self.systemSamples.append(systemSample)
+
+    def SummariseSystemUsage(self):
+        summary = {}
+        for valueName in ('cpuPercent', 'gpuPercent', 'powerTotalMw', 'networkReceiveMbps', 'networkSendMbps',
+                          'loopbackMbps', 'diskWriteMbps'):
+            values = [getattr(sample, valueName) for sample in self.systemSamples]
+            summary[valueName] = DescribeValues(values)
+        summary['ramUsedMbMax'] = max((sample.ramUsedMb for sample in self.systemSamples), default=NAN)
+        summary['junctionTemperatureMax'] = MaximumOrNan(sample.junctionTemperature for sample in self.systemSamples)
+        summary['nodes'] = {}
+        for nodeName in (self.systemSamples[0].nodes if self.systemSamples else {}):
+            nodeSamples = [sample.nodes[nodeName] for sample in self.systemSamples]
+            summary['nodes'][nodeName] = {
+                'cpuPercent': DescribeValues([nodeSample.cpuPercent for nodeSample in nodeSamples]),
+                'memoryMbMax': MaximumOrNan(nodeSample.memoryMb for nodeSample in nodeSamples),
+            }
+        return summary
 
     def MarkEvent(self, eventType, note):
         if eventType not in MANUAL_EVENT_TYPES:
@@ -241,7 +270,9 @@ class RunMetrics:
             wrong_leader_mark_count=self.markCounts[WRONG_LEADER_EVENT],
             perception_rate=self.perceptionRate.CalculateRate(nowReceiveSeconds),
             navigation_rate=self.navigationRate.CalculateRate(nowReceiveSeconds),
-            frame_time_ms=self.frameTimes[-1] if self.frameTimes else NAN)
+            frame_time_ms=self.frameTimes[-1] if self.frameTimes else NAN,
+            image_age_ms=self.imageAges[-1] if self.imageAges else NAN,
+            camera_age_at_fusion_ms=self.cameraAgesAtFusion[-1] if self.cameraAgesAtFusion else NAN)
 
     def BuildReport(self, finishRequest):
         distanceStatistics = self.CalculateDistanceStatistics()
@@ -298,7 +329,10 @@ class RunMetrics:
                 'navigationRateWorst': min(self.navigationRate.windowRates, default=NAN),
                 'frameTimeMsMean': MeanOrNan(self.frameTimes),
                 'frameTimeMsP95': CalculatePercentile(self.frameTimes, 95),
+                'imageAgeMs': DescribeValues(self.imageAges),
+                'cameraAgeAtFusionMs': DescribeValues(self.cameraAgesAtFusion),
             },
+            'systemUsage': self.SummariseSystemUsage(),
             'events': [vars(event) for event in self.events],
         }
 
@@ -327,3 +361,13 @@ def CalculatePercentile(values, percentile):
         return NAN
     sortedValues = sorted(values)
     return sortedValues[min(len(sortedValues) - 1, int(len(sortedValues) * percentile / 100))]
+
+
+def DescribeValues(values):
+    measuredValues = [value for value in values if math.isfinite(value)]
+    return {'mean': MeanOrNan(measuredValues), 'p50': CalculatePercentile(measuredValues, 50),
+            'p95': CalculatePercentile(measuredValues, 95), 'max': max(measuredValues, default=NAN)}
+
+
+def MaximumOrNan(values):
+    return max((value for value in values if math.isfinite(value)), default=NAN)

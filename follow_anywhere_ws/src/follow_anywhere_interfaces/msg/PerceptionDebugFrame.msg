@@ -1,5 +1,5 @@
 # What perception saw and decided in one camera frame. For the viewer, PlotJuggler and rosbags; not an output
-# (the output is /perception/leader and /perception/obstacles).
+# (the output is /perception/camera/leader and /perception/camera/obstacles).
 # header.stamp: time of the camera image. header.frame_id: base_link (positions); boxes are in image pixels.
 
 uint8 IDLE = 0                             # no leader enrolled
@@ -29,7 +29,8 @@ uint8 side_right_views
 uint8 partly_hidden_views
 
 # cost of this frame
-float32 detector_time_ms                   # person detector + tracker
+float32 image_age_ms                       # age of the camera image when the frame callback started (capture -> arrival)
+float32 detector_time_ms                  # person detector + tracker
 float32 reid_time_ms                       # OSNet, all crops of this frame
 int32 reid_crop_count                      # crops OSNet embedded this frame
 int32 people_count                         # people tracked this frame

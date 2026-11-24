@@ -158,6 +158,7 @@ class PerceptionNode(Node):
         self.lastLeaderPosition = None
         self.lastKnownLeaderPoint = None
         self.leaderRadius = None
+        self.imageAgeMs = math.nan
         self.robotPose = MakeStillRobotPose()
         self.lastOdometrySeconds = None
         self.odometrySilent = False
@@ -205,6 +206,7 @@ class PerceptionNode(Node):
     def HandleColorImage(self, colorImageMessage):
         frameStartSeconds = time.perf_counter()
         imageSeconds = ConvertStampToSeconds(colorImageMessage.header.stamp)
+        self.imageAgeMs = (self.get_clock().now().nanoseconds * 1e-9 - imageSeconds) * 1000.0
         try:
             imageBgr = self.imageBridge.imgmsg_to_cv2(colorImageMessage, COLOR_IMAGE_ENCODING)
             detectionStartSeconds = time.perf_counter()
@@ -556,6 +558,7 @@ class PerceptionNode(Node):
         debugFrameMessage.side_left_views = storedViewCounts[SIDE_LEFT_GROUP]
         debugFrameMessage.side_right_views = storedViewCounts[SIDE_RIGHT_GROUP]
         debugFrameMessage.partly_hidden_views = storedViewCounts[PARTLY_HIDDEN_GROUP]
+        debugFrameMessage.image_age_ms = self.imageAgeMs
         debugFrameMessage.detector_time_ms = detectorTimeMilliseconds
         debugFrameMessage.reid_time_ms = self.reidSecondsInFrame * 1000.0
         debugFrameMessage.reid_crop_count = self.reidCropCountInFrame

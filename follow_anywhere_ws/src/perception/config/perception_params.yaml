@@ -117,6 +117,7 @@ camera_calibration:
 evaluation_node:
   ros__parameters:
     metricsRate: 5.0
+    systemUsageRate: 1.0
     desiredDistance: 1.5
     nearCollisionDistance: 0.3
     switchJumpDistance: 1.5

@@ -21,6 +21,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PerceptionCalibrateLeader.srv"
   # evaluation
   "msg/EvaluationMetrics.msg"
+  "msg/EvaluationSystemUsage.msg"
   "srv/EvaluationFinishRun.srv"
   "srv/EvaluationMarkEvent.srv"
   # navigation: add here
