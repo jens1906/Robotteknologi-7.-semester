@@ -3,8 +3,8 @@
 // Subscribes:
 //   /utlidar/cloud_base           sensor_msgs/PointCloud2  base_link, Go2 clock, ~15 Hz
 //   /utlidar/robot_odom           nav_msgs/Odometry        odom -> base_link, Go2 clock
-//   /perception/camera/leader     follow_anywhere_interfaces/PerceptionLeader         (perception_node, remapped)
-//   /perception/camera/obstacles  follow_anywhere_interfaces/PerceptionObstacleArray  (perception_node, remapped)
+//   /perception/camera/leader     follow_anywhere_interfaces/PerceptionLeader         (perception_node)
+//   /perception/camera/obstacles  follow_anywhere_interfaces/PerceptionObstacleArray  (perception_node)
 // Publishes (what navigation reads; same topics and types as 2dSim's fake_perception):
 //   /perception/leader              PerceptionLeader         enriched with the lidar
 //   /perception/obstacles_static    PerceptionObstacleArray  lidar-only clusters (no camera person, not the leader)
@@ -20,8 +20,9 @@
 // computer) are moved to the cloud's time, and the outputs are stamped on this computer's clock, because
 // navigation measures message age against its own now().
 // The fusion runs once per cloud. A nearly empty cloud is skipped and the last outputs are repeated (CloudGate).
-// /perception/scan is made from the published obstacles. While no cloud arrived for lidarTimeout, camera messages
-// are passed through unchanged, so the system still works without the lidar.
+// /perception/scan is made from the published obstacles. Both sensors or nothing: the outputs are published only
+// for a cloud while the camera people are younger than cameraTimeout (the leader only while the camera leader is),
+// and without clouds nothing is published, so navigation and search never get lidar-only or camera-only data.
 
 #include <algorithm>
 #include <cmath>
@@ -402,7 +403,8 @@ public:
     // The tracker uses the same lidar range noise as the fusion, so it is only set once (lidarRangeStd).
     trackerParams.lidarRangeStd = fusionParams.lidarRangeStd;
     tracker = ClusterTracker(trackerParams);
-    // How old camera messages, lidar clouds and odometry may be before they count as missing.
+    // How old camera messages and odometry may be before they count as missing; lidarTimeout: gap after which
+    // a cloud is logged as "lidar back".
     DeclareParameter("cameraTimeout", cameraTimeout);
     DeclareParameter("lidarTimeout", lidarTimeout);
     DeclareParameter("odometryTimeout", odometryTimeout);
@@ -468,29 +470,18 @@ private:
     poseHistory.Add(stampSeconds, Pose2{position.x, position.y, CalculateHeading(odometryMessage.pose.pose.orientation)});
   }
 
-  // /perception/camera/leader: keeps the newest camera leader for the next cloud. While the lidar is missing it
-  // is passed straight through to /perception/leader, so following still works without the lidar.
+  // /perception/camera/leader: keeps the newest camera leader for the next cloud.
   void HandleCameraLeader(PerceptionLeader::ConstSharedPtr leaderMessage)
   {
     cameraLeader = leaderMessage;
     cameraLeaderArrival = GetNowSeconds();
-    if (IsLidarStale()) {
-      leaderPublisher->publish(*leaderMessage);
-    }
   }
 
-  // /perception/camera/obstacles: keeps the newest camera people for the next cloud. While the lidar is
-  // missing, they are passed through as the combined obstacles and an empty static list is published.
+  // /perception/camera/obstacles: keeps the newest camera people for the next cloud.
   void HandleCameraObstacles(PerceptionObstacleArray::ConstSharedPtr obstaclesMessage)
   {
     cameraObstacles = obstaclesMessage;
     cameraObstaclesArrival = GetNowSeconds();
-    if (IsLidarStale()) {
-      combinedObstaclesPublisher->publish(*obstaclesMessage);
-      PerceptionObstacleArray emptyObstacles;
-      emptyObstacles.header = obstaclesMessage->header;
-      staticObstaclesPublisher->publish(emptyObstacles);
-    }
   }
 
   // /utlidar/cloud_base: the main pipeline, run once per lidar cloud:
@@ -526,7 +517,9 @@ private:
       PublishDebugMessage("nearly empty cloud skipped, last output repeated", " (" +
         std::to_string(cloudPoints.size()) + " points, typical " +
         std::to_string(std::lround(cloudGate.CalculateTypicalCount())) + ")");
-      RepeatLastOutput(outputStamp);
+      if (IsCameraObstaclesFresh(arrivalSeconds)) {
+        RepeatLastOutput(outputStamp, IsCameraLeaderFresh(arrivalSeconds));
+      }
       return;
     }
     // Fit the floor, then keep only the points that stand up from it.
@@ -573,10 +566,23 @@ private:
     FusionInput fusionInput = BuildCameraInput(arrivalSeconds, robot, robotPose.has_value());
     const FusionOutput fused = fusion.Fuse(fusionInput, steadyClusters, robot, cloudSeconds);
 
-    // Publish everything, and keep a copy of each message so a skipped cloud can repeat it.
-    // The leader is only published when there is camera data (the lidar alone does not know who the leader is).
+    if (markersPublisher) {
+      markersPublisher->publish(BuildMarkers(steadyClusters, fused, floorPlane, outputStamp));
+    }
+
+    // Both sensors or nothing: without fresh camera people nothing is published (and nothing kept to repeat), so
+    // navigation and search see the data go stale and stop. The leader also needs a fresh camera leader.
     lastLeader.reset();
-    if (fusionInput.hasCamera) {
+    lastStaticObstacles.reset();
+    lastCombinedObstacles.reset();
+    lastScan.reset();
+    if (!IsCameraObstaclesFresh(arrivalSeconds)) {
+      PublishDebugMessage("no fresh camera data, nothing published");
+      return;
+    }
+
+    // Publish everything, and keep a copy of each message so a skipped cloud can repeat it.
+    if (IsCameraLeaderFresh(arrivalSeconds)) {
       lastLeader = BuildLeaderMessage(fused.leader, outputStamp);
       leaderPublisher->publish(*lastLeader);
     }
@@ -587,9 +593,6 @@ private:
     lastScan = BuildScanMessage(BuildScan(steadyClusters, scanRays, filterParams.rangeMin, filterParams.rangeMax),
       outputStamp);
     scanPublisher->publish(*lastScan);
-    if (markersPublisher) {
-      markersPublisher->publish(BuildMarkers(steadyClusters, fused, floorPlane, outputStamp));
-    }
 
     // One summary line per cloud at DEBUG log level (shown with --ros-args --log-level debug).
     std::size_t coastingCount = 0;
@@ -607,10 +610,16 @@ private:
   // This computer's current time (or the simulation time with use_sim_time), in seconds.
   double GetNowSeconds() {return now().seconds();}
 
-  // True when no lidar cloud arrived yet, or the last one is older than lidarTimeout.
-  bool IsLidarStale()
+  // True when a camera leader message arrived at most cameraTimeout before arrivalSeconds.
+  bool IsCameraLeaderFresh(double arrivalSeconds)
   {
-    return lastCloudArrival < 0.0 || GetNowSeconds() - lastCloudArrival > lidarTimeout;
+    return cameraLeader && arrivalSeconds - cameraLeaderArrival <= cameraTimeout;
+  }
+
+  // True when a camera people message arrived at most cameraTimeout before arrivalSeconds.
+  bool IsCameraObstaclesFresh(double arrivalSeconds)
+  {
+    return cameraObstacles && arrivalSeconds - cameraObstaclesArrival <= cameraTimeout;
   }
 
   // The newest camera messages, moved from the camera's time to the cloud's (robot pose `robot`).
@@ -619,8 +628,8 @@ private:
   FusionInput BuildCameraInput(double arrivalSeconds, const Pose2 & robot, bool hasRobotPose)
   {
     FusionInput fusionInput;
-    const bool leaderFresh = cameraLeader && arrivalSeconds - cameraLeaderArrival <= cameraTimeout;
-    const bool obstaclesFresh = cameraObstacles && arrivalSeconds - cameraObstaclesArrival <= cameraTimeout;
+    const bool leaderFresh = IsCameraLeaderFresh(arrivalSeconds);
+    const bool obstaclesFresh = IsCameraObstaclesFresh(arrivalSeconds);
     fusionInput.hasCamera = leaderFresh || obstaclesFresh;
     if (!fusionInput.hasCamera) {
       return fusionInput;
@@ -709,11 +718,11 @@ private:
     return obstaclesMessage;
   }
 
-  // The last published messages again, with a new stamp (a skipped cloud).
+  // The last published messages again, with a new stamp (a skipped cloud). The leader only with withLeader.
   // Navigation checks how old messages are; repeating keeps the obstacles from disappearing for one cloud.
-  void RepeatLastOutput(const builtin_interfaces::msg::Time & stamp)
+  void RepeatLastOutput(const builtin_interfaces::msg::Time & stamp, bool withLeader)
   {
-    if (lastLeader) {
+    if (lastLeader && withLeader) {
       lastLeader->header.stamp = stamp;
       leaderPublisher->publish(*lastLeader);
     }

@@ -1,4 +1,4 @@
-"""Start lidar_obstacles_node alone (perception_node must publish on /perception/camera/*, see perception_fused.launch.py).
+"""Start lidar_obstacles_node alone (it needs perception_node's /perception/camera/*, see perception_fused.launch.py).
 
     ros2 launch lidar_obstacles lidar_obstacles.launch.py
     ros2 launch lidar_obstacles lidar_obstacles.launch.py useSimTime:=true          # bag played with --clock

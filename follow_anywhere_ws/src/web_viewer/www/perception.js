@@ -85,7 +85,7 @@ class PerceptionView {
     // Input topics
     this.Subscribe('/perception/debug_frame', { hz: 0 },
       (debugFrame) => this.cameraPanel.HandleDebugFrame(debugFrame));
-    this.Subscribe('/perception/obstacles', { hz: 0 },
+    this.Subscribe('/perception/camera/obstacles', { hz: 0 },
       (obstacleArray) => this.dynamicObstacleMapPanel.HandleObstacles(obstacleArray));
     this.Subscribe('/perception/obstacles_static', { hz: 0 },
       (obstacleArray) => this.staticObstacleMapPanel.HandleObstacles(obstacleArray));

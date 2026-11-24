@@ -478,6 +478,7 @@ public:
     double max_vel_margin = 0.5; // cap on uncertainty growth along the horizon
     double min_sector_speed = 0.1; // below this the nominal has no direction
     double max_obstacle_age = 0.5;
+    double max_leader_age = 0.5;
 
     double los_margin = 1.0;
     double los_cost_linear = 10.0;
@@ -488,19 +489,21 @@ public:
     const double w_cone_q = 30.0, w_cone_l = 6.0;  // outside full-vision cone
     const double w_back_q = 80.0, w_back_l = 16.0; // moving backwards
 
-    const bool use_leader = leader.has_leader;
+    int num_obstacles = obstacles.size;
+    const double obs_age = message_age(obstacles_stamp);
+    if (obstacles_stamp.nanoseconds() == 0 || obs_age > max_obstacle_age + dt) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "No fresh fused obstacles (%.2f s old), standing still.",
+                           obstacles_stamp.nanoseconds() == 0 ? INFINITY : obs_age);
+      return;
+    }
+
+    const bool use_leader =
+        leader.has_leader && message_age(leader_stamp) <= max_leader_age + dt;
     const double leader_age = use_leader ? message_age(leader_stamp) : 0.0;
     // SEARCH / GIVE_UP: track /search/path instead (a valid track wins in the
     // same tick).
     const bool use_search = !use_leader && prepare_search_ref();
-
-    int num_obstacles = obstacles.size;
-    const double obs_age = message_age(obstacles_stamp);
-    if (num_obstacles > 0 && obs_age > max_obstacle_age + dt) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "Obstacles are %.2f s old, ignoring them.", obs_age);
-      num_obstacles = 0;
-    }
 
     std::array<double, 6> leader_arr = {leader.pos.x(), leader.pos.y(),
                                         leader.vel.x(), leader.vel.y(),

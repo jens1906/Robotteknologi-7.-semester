@@ -30,9 +30,10 @@ To include:
 - No odometry yet: the robot counts as standing still. Odometry silent for odometryTimeout: one debug line, the
   robot's pose uncertainty grows (velocity_tracker). Odometry starting or coming back: velocity filters restart.
 - Publish (all stamped with the camera image's time, frame base_link):
-  Output: /perception/leader (status, closest point, velocity, uncertainties, lost duration, last known point),
-  /perception/obstacles (every other tracked person: closest point to the robot and to the line of sight,
-  velocity, uncertainties; the leader is not in it).
+  Output: /perception/camera/leader (status, closest point, velocity, uncertainties, lost duration, last known
+  point), /perception/camera/obstacles (every other tracked person: closest point to the robot and to the line of
+  sight, velocity, uncertainties; the leader is not in it). Camera only: lidar_obstacles_node fuses them with the
+  lidar and publishes what navigation reads.
   Debug: /perception/debug_frame (boxes, leader details, cost of the frame; for the viewer and PlotJuggler),
   /perception/debug (error lines).
 - No depth, camera_info or TF: positions are invalid (one debug line), tracking and the leader keep working.
@@ -167,8 +168,8 @@ class PerceptionNode(Node):
         self.transformListener = tf2_ros.TransformListener(self.transformBuffer, self)
 
         # Output topics
-        self.leaderPublisher = self.create_publisher(PerceptionLeader, '/perception/leader', 10)
-        self.obstaclesPublisher = self.create_publisher(PerceptionObstacleArray, '/perception/obstacles', 10)
+        self.leaderPublisher = self.create_publisher(PerceptionLeader, '/perception/camera/leader', 10)
+        self.obstaclesPublisher = self.create_publisher(PerceptionObstacleArray, '/perception/camera/obstacles', 10)
         self.debugFramePublisher = self.create_publisher(PerceptionDebugFrame, '/perception/debug_frame', 10)
         self.debugPublisher = self.create_publisher(String, '/perception/debug', 10)
 

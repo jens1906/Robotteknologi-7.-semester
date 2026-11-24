@@ -93,8 +93,8 @@ lidar_obstacles:
     lidarRangeStd: [0.02, 0.005]       # COPIED (2dSim, Unitree L1 spec): std = a + b * range
     minimumPositionUncertainty: 0.05   # COPIED: m, published at least this
     cameraPosition: [0.30, 0.0]        # COPIED (go2_mounts.yaml camera_link): start of the line of sight
-    cameraTimeout: 0.5          # GUESS: s, older camera messages are not used (lidar only)
-    lidarTimeout: 0.5           # GUESS: s without a cloud before camera messages are passed through unchanged
+    cameraTimeout: 0.5          # GUESS: s, older camera messages count as missing: then nothing is published
+    lidarTimeout: 0.5           # GUESS: s without a cloud before the next cloud is logged as "lidar back"
     clockOffsetWindow: 5.0      # COPIED: s of odometry over which the Go2 clock offset is taken
 
     # --- scan -----------------------------------------------------------------------------------
