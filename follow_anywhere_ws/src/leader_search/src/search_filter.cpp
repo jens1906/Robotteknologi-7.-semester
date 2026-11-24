@@ -173,6 +173,8 @@ bool validate(const Params& p, std::string* err) {
   if (!(p.resolution > 0.0f)) return fail("resolution must be > 0");
   if (!(p.s_min > 0.0f) || p.s_max < p.s_min) return fail("need 0 < s_min <= s_max");
   if (p.t_grace < 0.0f || p.t_max <= 0.0f) return fail("t_grace >= 0, t_max > 0");
+  if (p.t_silent < p.t_grace) return fail("t_silent >= t_grace");
+  if (p.n_grace < 1) return fail("n_grace >= 1");
   if (p.sigma_theta0 <= 0.0f || p.sigma_h < 0.0f) return fail("sigma_theta0 > 0, sigma_h >= 0");
   if (p.p_stop0 < 0.0f || p.p_stop0 > 1.0f) return fail("p_stop0 must be in [0, 1]");
   const float dt = 1.0f / p.rate_hz;
@@ -206,7 +208,7 @@ bool load_params(const std::string& yaml_path, Params* out, std::string* err) {
     Params p = *out;
 #define LS_READ(name) \
   if (n[#name]) p.name = n[#name].as<decltype(p.name)>();
-    LS_READ(rate_hz) LS_READ(window_cells) LS_READ(window_radius) LS_READ(resolution) LS_READ(t_grace)
+    LS_READ(rate_hz) LS_READ(window_cells) LS_READ(window_radius) LS_READ(resolution) LS_READ(t_grace) LS_READ(n_grace) LS_READ(t_silent)
     LS_READ(s_min) LS_READ(s_max) LS_READ(v_stop) LS_READ(sigma_theta0) LS_READ(sigma_h)
     LS_READ(stopped_enabled) LS_READ(p_stop0) LS_READ(lambda_stop) LS_READ(lambda_go)
     LS_READ(occ_memory) LS_READ(cam_fov) LS_READ(cam_range) LS_READ(cam_yaw) LS_READ(rho) LS_READ(delta_log)
@@ -346,7 +348,8 @@ void SearchFilter::reset() {
   mode_ = Mode::TRACKING;
   s_ = oow_ = dropped_ = 0.0f;
   phase_o_ = phase_d_ = 0.5f;  // round, not floor, the max-product position
-  time_since_seen_ = time_since_loss_ = 0.0f;
+  time_since_seen_ = time_since_loss_ = time_since_frame_ = 0.0f;
+  misses_ = 0;
   has_track_ = has_target_ = clamped_ = false;
   target_state_ = -1;
 }
@@ -1427,7 +1430,8 @@ SearchOutput SearchFilter::step(const Pose2& robot, const ScanView* scan, const 
     }
     out.reacquired = mode_ != Mode::TRACKING;
     mode_ = Mode::TRACKING;
-    time_since_seen_ = 0.0f;
+    time_since_seen_ = time_since_frame_ = 0.0f;
+    misses_ = 0;
     has_target_ = false;
     out.mode = mode_;
     return out;
@@ -1435,11 +1439,22 @@ SearchOutput SearchFilter::step(const Pose2& robot, const ScanView* scan, const 
 
   float dt_eff = dt;
   if (mode_ == Mode::TRACKING) {
+    // Lost only on evidence: unmatched camera frames for t_grace, by perception's own clock
+    // (lost_duration), and at least n_grace of them; or no camera frame at all for t_silent.
+    // n_grace keeps a single missed re-ID on a slow camera (3 Hz: one frame = 0.33 s) a miss. A tick without a frame is not a
+    // miss: on a slow camera that would flip TRACKING -> SEARCH -> TRACKING between frames.
     time_since_seen_ += dt;
-    if (!has_track_ || time_since_seen_ < p_.t_grace) {
+    time_since_frame_ = look ? 0.0f : time_since_frame_ + dt;
+    if (look && std::isfinite(look->lost_duration)) time_since_seen_ = look->lost_duration;
+    for (int i = 0; i < obs_count; ++i) misses_ += !obs[i].matched;
+    const bool missed = look && time_since_seen_ >= p_.t_grace && misses_ >= p_.n_grace;
+    const bool silent = time_since_frame_ >= p_.t_silent;
+    if (!has_track_ || !(missed || silent)) {
       out.mode = mode_;
       return out;
     }
+    out.lost = missed ? LossCause::kNotMatched : LossCause::kSilent;
+    out.lost_after = time_since_seen_;
     const float since_seen = time_since_seen_;
     on_loss(last_track_, robot, scan);
     out.clamped = clamped_;

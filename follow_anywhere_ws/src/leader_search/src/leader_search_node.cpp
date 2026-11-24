@@ -128,6 +128,14 @@ class LeaderSearchNode : public rclcpp::Node {
     Observation o;
     o.robot = robot_;
     o.matched = m.status == PerceptionLeader::VISIBLE;
+    if (!o.matched) o.lost_duration = m.lost_duration;
+    const auto now = std::chrono::steady_clock::now();
+    if (last_frame_) {
+      const float gap = std::chrono::duration<float>(now - *last_frame_).count();
+      max_frame_gap_ = std::max(max_frame_gap_, gap);
+    }
+    last_frame_ = now;
+    ++frames_;
     if (o.matched && std::isfinite(m.closest_point.x) && std::isfinite(m.closest_point.y)) {
       // base_link -> odom with the current robot pose.
       const Vec2 p = rotate(robot_.yaw, m.closest_point.x, m.closest_point.y);
@@ -163,8 +171,23 @@ class LeaderSearchNode : public rclcpp::Node {
     const SearchOutput out = filter_.step(robot_, scan, obs_.data(), int32_t(n_obs_), dt);
     n_obs_ = 0;
     if (out.clamped) RCLCPP_WARN(get_logger(), "leader loss point outside the window, clamped");
+    if (out.lost == LossCause::kNotMatched)
+      RCLCPP_INFO(get_logger(), "lost: perception reports no match for %.2f s", out.lost_after);
+    else if (out.lost == LossCause::kSilent)
+      RCLCPP_WARN(get_logger(), "lost: no /perception/leader message for %.2f s (perception stalled?)",
+                  out.lost_after);
     if (out.mode != last_mode_)
       RCLCPP_INFO(get_logger(), "mode %d -> %d", int(last_mode_), int(out.mode));
+    // Perception rate, every 5 s: the search can only be as good as the camera frames it gets.
+    if (!rate_since_) rate_since_ = now;
+    const float window = std::chrono::duration<float>(now - *rate_since_).count();
+    if (window >= 5.0f) {
+      RCLCPP_INFO(get_logger(), "perception: %.1f frames/s, longest gap %.2f s", frames_ / window,
+                  max_frame_gap_);
+      frames_ = 0;
+      max_frame_gap_ = 0.0f;
+      rate_since_ = now;
+    }
     publish(out);
     last_mode_ = out.mode;
   }
@@ -271,6 +294,9 @@ class LeaderSearchNode : public rclcpp::Node {
   size_t n_obs_ = 0;
   Mode last_mode_ = Mode::TRACKING;
   std::optional<std::chrono::steady_clock::time_point> last_tick_;
+  std::optional<std::chrono::steady_clock::time_point> last_frame_, rate_since_;
+  int frames_ = 0;
+  float max_frame_gap_ = 0.0f;
   std::vector<float> marginal_;
   OccupancyGrid belief_msg_;
   double belief_period_ = 0.5;
