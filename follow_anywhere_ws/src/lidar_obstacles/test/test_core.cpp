@@ -221,6 +221,7 @@ TEST(Fusion, EnrichesMatchedPersonAndDeduplicates)
   person.closest = {1.9, 0.1};   // camera: a bit off
   person.positionSigma = 0.3;
   person.velocitySigma = 1.5;
+  person.isPerson = true;
   in.obstacles.push_back(person);
 
   Fusion fusion;
@@ -228,10 +229,12 @@ TEST(Fusion, EnrichesMatchedPersonAndDeduplicates)
   ASSERT_EQ(out.obstacles.size(), 2u);   // the person once + the other cluster, not 3
   const auto & p = out.obstacles[0];
   EXPECT_FALSE(p.isLidarOnly);
+  EXPECT_TRUE(p.data.isPerson);
   EXPECT_NEAR(p.data.closest.x, 1.8, 1e-6);   // nearest lidar point of the blob
   EXPECT_NEAR(p.data.closest.y, 0.0, 1e-6);
   EXPECT_LT(p.data.positionSigma, 0.1);
   EXPECT_TRUE(out.obstacles[1].isLidarOnly);
+  EXPECT_FALSE(out.obstacles[1].data.isPerson);
   EXPECT_NEAR(out.obstacles[1].data.closest.y, 2.8, 1e-6);
 }
 

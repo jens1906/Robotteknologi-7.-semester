@@ -529,6 +529,7 @@ class PerceptionNode(Node):
             obstacle.velocity = MakeVelocityVector(motionEstimate)
             obstacle.position_uncertainty = motionEstimate.positionSigma
             obstacle.velocity_uncertainty = motionEstimate.velocitySigma
+            obstacle.is_person = True
             obstaclesMessage.obstacles.append(obstacle)
         return obstaclesMessage
 

@@ -133,6 +133,7 @@ class FakePerceptionNode(Node):
             out.velocity = _vector(o.velocity)
             out.position_uncertainty = float(o.position_uncertainty)
             out.velocity_uncertainty = float(o.velocity_uncertainty)
+            out.is_person = bool(o.is_person)
             array.obstacles.append(out)
         self.obstacles_pub.publish(array)
 

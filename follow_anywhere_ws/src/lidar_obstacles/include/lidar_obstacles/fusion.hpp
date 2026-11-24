@@ -64,6 +64,7 @@ struct ObstacleData
   Point2 velocity;
   double positionSigma = NOT_A_NUMBER;
   double velocitySigma = NOT_A_NUMBER;
+  bool isPerson = false;                        // a camera person (kept for its matched cluster); lidar-only: false
 };
 
 // One obstacle of the fused output and where it came from.

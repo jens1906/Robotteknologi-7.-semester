@@ -89,7 +89,8 @@ struct Obstacle {
       Eigen::Vector2d::Zero(); // velocity in Cartesian coordinates (vx, vy)
   double pos_std = 0.0;        // standard deviation of the obstacle position
   double vel_std = 0.0;
-  double spd = 0.0; // speed of the obstacle
+  double spd = 0.0;       // speed of the obstacle
+  bool is_person = false; // may start moving at any time, also while standing
 };
 
 struct Leader {
@@ -135,6 +136,7 @@ Obstacle from_obstacle(const PerceptionObstacle &obstacle) {
   obs.vel_std = obstacle.velocity_uncertainty;
   obs.pos_std = obstacle.position_uncertainty;
   obs.spd = obs.vel.norm();
+  obs.is_person = obstacle.is_person;
   if (obs.vel.norm() < obstacle.velocity_uncertainty * 2.0) {
     obs.vel = Eigen::Vector2d::Zero();
   }
@@ -476,6 +478,7 @@ public:
     double hard_cost_quadratic = 1000.0;
     double hard_cost_linear = 1000.0;
     double max_vel_margin = 0.5; // cap on uncertainty growth along the horizon
+    double person_start_speed = 0.5; // a standing person may start this fast
     double min_sector_speed = 0.1; // below this the nominal has no direction
     double max_obstacle_age = 0.5;
     double max_leader_age = 0.5;
@@ -712,11 +715,13 @@ public:
           else
             obs_dir = Eigen::Vector2d::UnitX();
 
+          // People grow their margin even while standing; other obstacles
+          // only while moving.
+          double growth_speed = obs.vel.isZero() ? 0.0 : obs.vel_std;
+          if (obs.is_person)
+            growth_speed = std::max(obs.vel_std, person_start_speed);
           double obs_margin =
-              obs.pos_std +
-              (obs.vel.isZero()
-                   ? 0.0
-                   : std::min(obs.vel_std * t_pred, max_vel_margin));
+              obs.pos_std + std::min(growth_speed * t_pred, max_vel_margin);
 
           int row_idx = add_row(soft_margin + obs_margin - obs_dir.dot(obs_mov),
                                 OSQP_INFTY);

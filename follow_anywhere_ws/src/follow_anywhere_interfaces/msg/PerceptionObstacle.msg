@@ -5,3 +5,4 @@ geometry_msgs/Point line_of_sight_point    # point of the obstacle nearest the l
 geometry_msgs/Vector3 velocity             # 0 when standing still (constant velocity assumed)
 float32 position_uncertainty               # m, 1 sigma
 float32 velocity_uncertainty               # m/s, 1 sigma; large = velocity unknown
+bool is_person                             # a person seen by the camera: may start moving at any time, also while standing

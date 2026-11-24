@@ -672,6 +672,7 @@ private:
         obstacle.velocity = RotateVectorBetweenPoses(ConvertVectorMessage(obstacleMessage.velocity), cameraPose, robot);
         obstacle.positionSigma = obstacleMessage.position_uncertainty;
         obstacle.velocitySigma = obstacleMessage.velocity_uncertainty;
+        obstacle.isPerson = obstacleMessage.is_person;
         fusionInput.obstacles.push_back(obstacle);
       }
     }
@@ -713,6 +714,7 @@ private:
       obstacleMessage.velocity = MakeVectorMessage(fusedObstacle.data.velocity);
       obstacleMessage.position_uncertainty = static_cast<float>(fusedObstacle.data.positionSigma);
       obstacleMessage.velocity_uncertainty = static_cast<float>(fusedObstacle.data.velocitySigma);
+      obstacleMessage.is_person = fusedObstacle.data.isPerson;
       obstaclesMessage.obstacles.push_back(obstacleMessage);
     }
     return obstaclesMessage;

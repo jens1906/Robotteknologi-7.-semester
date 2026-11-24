@@ -321,6 +321,7 @@ class Obstacle:
     velocity: tuple
     position_uncertainty: float
     velocity_uncertainty: float
+    is_person: bool = False   # a person the camera sees
 
 
 def _cartesian(r, b):
@@ -403,5 +404,6 @@ class LeaderTracker:
                 velocity=d.velocity if d.moving else (0.0, 0.0),
                 position_uncertainty=d.range_std,
                 velocity_uncertainty=d.velocity_std,
+                is_person=d.class_id in (CLASS_PERSON, CLASS_LEADER),
             ))
         return leader, obstacles
