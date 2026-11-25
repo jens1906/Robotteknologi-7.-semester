@@ -2,8 +2,11 @@
 # Settings carried over from the earlier OSNet tests (botsort_tuned.yaml), where they
 # were scored against MOT17 ground truth: better than ByteTrack and better than using the YOLO
 # detector's features as appearance (that one linked the wrong people, ~3x the ID switches).
-# MEASURED on the Orin against ByteTrack with the same thresholds (bags 1120_1011 and 1120_1032): same speed
-# (tracker + rest 4.1 vs 4.0 ms), same leader, but ByteTrack made more tracker ids (17 vs 16, 15 vs 11).
+# MEASURED on the Orin against ByteTrack with the same thresholds (81 real-time runs: the 9 perception evaluation
+# bags x 3 variants x 3 repeats, PerceptionEvaluation/trackerEval): same speed (detector + tracker 17.4 ms both),
+# ByteTrack 8 % more tracker ids and more leader track breaks (77 vs 67), and once handed the leader's id to
+# another person during a crossing while enrolling (LeaderShuffle): wrong leader for the rest of the run (905
+# frames). BoT-SORT: 0 wrong-leader frames.
 #
 # Frames here are PROCESSED frames: when the detector is slower than the camera, frames are dropped.
 
@@ -15,9 +18,10 @@ track_buffer: 30            # processed frames a lost track is kept
 match_thresh: 0.8
 fuse_score: True
 
-# Camera motion compensation OFF. MEASURED on the Orin (TensorRT engine, bags 1120_1011 high rotate and
-# 1120_1032): sparseOptFlow cost ~11 ms of the detector call (29 -> 18 ms) and gave the same tracker ids,
-# the same leader id changes and the same or more time with the leader lost.
+# Camera motion compensation OFF. MEASURED on the Orin (same 81 runs): sparseOptFlow cost ~12 ms of the
+# detector call (29.0 -> 17.4 ms p50, 74 -> 80 % of camera frames processed, 84 -> 73 % of a CPU core) and gave
+# no better tracking: same tracker ids per minute (7.6 vs 7.7), 0 wrong-leader frames in both, recall 0.63 vs 0.65,
+# also on the high-rotate bag.
 gmc_method: none
 
 # Appearance matching is OFF. With the YOLO detector's own features it hurt (more ID switches); the
