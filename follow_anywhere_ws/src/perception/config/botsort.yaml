@@ -1,7 +1,9 @@
-# BoT-SORT (motion + camera-motion compensation, no appearance model) for the person detector.
+# BoT-SORT (motion only: no camera-motion compensation, no appearance model) for the person detector.
 # Settings carried over from the earlier OSNet tests (botsort_tuned.yaml), where they
 # were scored against MOT17 ground truth: better than ByteTrack and better than using the YOLO
 # detector's features as appearance (that one linked the wrong people, ~3x the ID switches).
+# MEASURED on the Orin against ByteTrack with the same thresholds (bags 1120_1011 and 1120_1032): same speed
+# (tracker + rest 4.1 vs 4.0 ms), same leader, but ByteTrack made more tracker ids (17 vs 16, 15 vs 11).
 #
 # Frames here are PROCESSED frames: when the detector is slower than the camera, frames are dropped.
 
@@ -13,9 +15,10 @@ track_buffer: 30            # processed frames a lost track is kept
 match_thresh: 0.8
 fuse_score: True
 
-# Camera motion compensation. The Go2 camera moves and shakes; on the static test sequences it made
-# no difference, on the moving ones it was neutral, and it costs ~1 fps.
-gmc_method: sparseOptFlow
+# Camera motion compensation OFF. MEASURED on the Orin (TensorRT engine, bags 1120_1011 high rotate and
+# 1120_1032): sparseOptFlow cost ~11 ms of the detector call (29 -> 18 ms) and gave the same tracker ids,
+# the same leader id changes and the same or more time with the leader lost.
+gmc_method: none
 
 # Appearance matching is OFF. With the YOLO detector's own features it hurt (more ID switches); the
 # leader is re-identified by reid_model.py instead.
