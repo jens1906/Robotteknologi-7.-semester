@@ -30,7 +30,7 @@ struct Params {
   float window_radius = 15.0f; // [m] round window around the robot; 0 = square of window_cells
   int32_t window_cells = 20;   // W of the square window (window_radius = 0)
   float resolution = 0.5f;     // r [m]
-  float t_grace = 0.3f;        // [s] without a re-ID match before SEARCH (perception's lost_duration)
+  float t_grace = 0.3f;        // [s] without a re-ID match before SEARCH (perception's clock)
   int32_t n_grace = 2;         // and at least this many unmatched frames in a row (slow cameras)
   float t_silent = 1.0f;       // [s] without any camera frame before SEARCH (perception stalled)
   float s_min = 0.3f;          // [m/s] leader speed clamp
@@ -61,7 +61,7 @@ struct Params {
   float wall_cost = 1.0f;      // [m] planner: extra cost of entering a cell next to a wall
   float path_spacing = 0.1f;   // [m] output path resampling
   float tail_cut = 1e-6f;      // belief below this is set to 0 (skips empty cells; 0 = exact)
-  float standoff = 1.0f;       // [m] SEARCH path ends this far before the intercept (look, not reach)
+  float standoff = 1.0f;       // [m] SEARCH path stops this far before the intercept (look)
   float t_max = 20.0f;         // [s] give up after this long in SEARCH
   float p_min = 0.01f;         // give up when the largest cell mass is below this
   float p_out_max = 0.5f;      // give up when out_of_window exceeds this
@@ -130,8 +130,6 @@ struct SearchOutput {
   Vec2 target;                   // target state's cell centre, odom
   int8_t target_heading = -1;    // -1 = stopped state
   Vec2 intercept;                // odom
-  bool looked = false;           // an unmatched camera frame was applied this tick
-  float max_cell_mass = 0.0f;
   float out_of_window = 0.0f;
   float dropped_mass = 0.0f;     // DROP (or REDIRECT without an open h+-1) this tick
   float time_since_loss = 0.0f;
@@ -146,7 +144,7 @@ struct CellBox {
 
 // Per-stage time of the last step() in microseconds (profiling, off unless enabled).
 enum Stage : int {
-  kStShift, kStRaster, kStEdges, kStDiffuse, kStMove, kStObserve, kStNormalise, kStTarget,
+  kStShift, kStRaster, kStEdges, kStDiffuse, kStMove, kStObserve, kStTarget,
   kStDijkstra, kStIntercept, kStPath, kNumStages
 };
 
@@ -190,7 +188,6 @@ class SearchFilter {
   const uint8_t* seen() const { return seen_; }
   float out_of_window() const { return oow_; }
   float dropped_mass() const { return dropped_; }
-  float speed() const { return s_; }
   Mode mode() const { return mode_; }
   size_t arena_bytes() const { return arena_size_; }
 
@@ -212,14 +209,21 @@ class SearchFilter {
   CellBox debug_box_belief() const { return box_b_; }
   CellBox debug_box_stopped() const { return box_s_; }
   // Tests: only the observation update from this robot pose (no normalisation).
-  void debug_observe(const Pose2& robot) { observe(robot); }
+  void debug_observe(const Pose2& robot) { observe_normalise(&robot, false); }
   // Total of b + stopped + out_of_window just before the last normalisation (should be ~1).
   float last_total() const { return last_total_; }
 
  private:
   struct TickConst;
 
-  int32_t ord(int32_t i) const { return order_ ? order_[i] : i; }
+  // Geometry and state indices.
+  Vec2 to_grid(Vec2 q) const { return {q.x / r_ - ox_, q.y / r_ - oy_}; }  // window cell units
+  bool is_stopped(int32_t j) const { return j >= NS_; }  // j: index into m (N*8), or NS_ + c
+  int32_t state_cell(int32_t j) const { return is_stopped(j) ? j - NS_ : j / kHeadings; }
+  float state_score(int32_t j) const { return is_stopped(j) ? ms_[j - NS_] : m_[j]; }
+  float cell_mass(int32_t c) const;  // stopped plus the 8 headings
+  int32_t nearest_reachable(Vec2 q) const;  // finite dist_ cell closest to q, -1 if none
+
   void swap_all();
   void centre_window(const Pose2& robot);
   void shift_window(const Pose2& robot);
@@ -230,33 +234,41 @@ class SearchFilter {
   CellBox full_box() const { return CellBox{0, 0, W_ - 1, W_ - 1}; }
   CellBox expand(const CellBox& b, int k) const;
   CellBox region(const CellBox& b) const { return skips_ ? b : full_box(); }
+  CellBox all_boxes() const;  // union of the four support boxes (read and write side)
   template <class F>
   void for_cells(const CellBox& r, F&& f) const;  // f(c, x, y) over window cells in r
+  template <class F>
+  void for_box(const CellBox& r, F&& f) const;  // f(c, x, y), every cell of r in natural order
   void boxes_from_values();
   void predict(float dt);
   void heading_diffusion(const TickConst& k);
   void move(const TickConst& k);
-  void observe(const Pose2& cam_robot);
+  void account_blocked(const TickConst& k);  // mass on closed edges -> out_of_window / dropped
   void observe_rays(const Pose2& robot);
   void observation_factors(float* f, float* lf) const;
-  void observe_normalise(const Pose2* cam);
+  // Observation (cam = null: none), then normalisation unless normalise is false (tests).
+  void observe_normalise(const Pose2* cam, bool normalise = true);
   bool select_target(SearchOutput* out);
   // Stops once all goal cells are settled (n_goals > 0) or beyond max_dist.
   void plan_dijkstra(int32_t start, const int32_t* goals = nullptr, int32_t n_goals = 0,
                      float max_dist = std::numeric_limits<float>::infinity());
-  int32_t line_cells(int32_t* cells) const;  // the target's constant-velocity line (intercept)
+  // The target's constant-velocity line p_k, k = 0..line_kmax() (intercept candidates).
+  int32_t line_kmax() const { return is_stopped(target_state_) ? 0 : p_.K_f; }
+  Vec2 line_point(int32_t k) const;
+  int32_t line_cells(int32_t* cells) const;  // its cells, up to a wall or the window edge
   int32_t choose_intercept(const Pose2& robot, SearchOutput* out);
   void build_path(const Pose2& robot, int32_t goal_cell, Vec2 goal, Vec2 look_at, float standoff,
                   SearchOutput* out);
   bool line_of_sight(Vec2 a, Vec2 b, bool avoid_near = false) const;
   float travel_time(const Pose2& robot, int32_t cell, Vec2 pk) const;
-  void filter_tick(const Pose2& robot, const ScanView* scan, const Observation* looked,
-                   float dt, SearchOutput* out);
+  void filter_tick(const Pose2& robot, const ScanView* scan, const Observation* looked, float dt);
   void give_up_path(const Pose2& robot, SearchOutput* out);
   float max_cell_mass() const;
+  void stage_begin(int64_t* t0) const;
+  void stage_end(int stage, int64_t* t0);
 
   Params p_;
-  int32_t W_ = 0, N_ = 0;
+  int32_t W_ = 0, N_ = 0, NS_ = 0;  // window side, cells, heading states (N * 8)
   float r_ = 0.0f;
   int32_t ox_ = 0, oy_ = 0;  // window origin in whole cells of the odom grid
   const int32_t* order_ = nullptr;
@@ -270,7 +282,7 @@ class SearchFilter {
   float *ms_ = nullptr, *ms2_ = nullptr;  // max-product of stopped (log), N
   uint8_t* edge_ = nullptr;               // N*8, debug expansion of emask_ (edge_open())
   uint8_t* emask_ = nullptr;              // N, bit h = edge (c, h) open
-  uint8_t* seen_scratch_ = nullptr;       // N, planner scratch: wall cells inside the window
+  uint8_t* wall_ = nullptr;               // N, planner scratch: wall cells inside the window
   uint8_t* leave_ = nullptr;              // N, bit h = c + d(h) is off the window (fixed)
   uint8_t* occ_ = nullptr;                // N
   uint8_t* seen_ = nullptr;               // N
@@ -283,8 +295,6 @@ class SearchFilter {
   bool skips_ = true;
   bool timing_ = false;
   double stage_us_[kNumStages] = {};
-  void stage_begin(int64_t* t0) const;
-  void stage_end(int stage, int64_t* t0);
   float* dist_ = nullptr;                 // N
   int32_t* parent_ = nullptr;             // N
   float* heap_key_ = nullptr;             // N*8
@@ -300,15 +310,16 @@ class SearchFilter {
   float phase_o_ = 0.0f, phase_d_ = 0.0f;  // max-product move phases (orthogonal, diagonal)
   float oow_ = 0.0f, dropped_ = 0.0f, last_total_ = 1.0f;
   float time_since_seen_ = 0.0f, time_since_loss_ = 0.0f;
-  float time_since_frame_ = 0.0f;
-  int32_t misses_ = 0;             // unmatched camera frames since the last match  // since the last camera frame of any kind (TRACKING)
+  float time_since_frame_ = 0.0f;  // since the last camera frame of any kind (TRACKING)
+  int32_t misses_ = 0;             // unmatched camera frames since the last match
   bool has_track_ = false;
   TrackInit last_track_;
   Vec2 last_seen_;
   bool has_target_ = false;
   Vec2 target_;
   int32_t target_state_ = -1;
-  int32_t best_state_ = -1;  // argmax of m from the last observe_normalise()  // index into m (N*8) or N*8 + c for stopped
+  // Argmax of m from the last observe_normalise(): index into m (N*8), or N*8 + c for stopped.
+  int32_t best_state_ = -1;
   bool clamped_ = false;
 };
 
